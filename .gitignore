@@ -1,0 +1,24 @@
+# Go
+collector/bin/
+*.exe
+*.test
+
+# Python
+agent/__pycache__/
+agent/**/__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
