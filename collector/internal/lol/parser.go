@@ -47,9 +47,10 @@ type Vec2 struct {
 }
 
 type GameEvent struct {
-	EventID   int     `json:"event_id"`
-	EventName string  `json:"event_name"`
-	EventTime float64 `json:"event_time"`
+	EventID    int     `json:"event_id"`
+	EventName  string  `json:"event_name"`
+	EventTime  float64 `json:"event_time"`
+	DragonType string  `json:"dragon_type,omitempty"`
 }
 
 type DragonInfo struct {
@@ -143,45 +144,32 @@ func ParseGameState(raw []byte) (*GameState, error) {
 	if data, ok := root["events"]; ok {
 		state.RawEventData = data
 		var ev struct {
-			Events []GameEvent `json:"Events"`
+			Events []apiGameEvent `json:"Events"`
 		}
 		if err := json.Unmarshal(data, &ev); err == nil {
-			state.Events = ev.Events
+			state.Events = make([]GameEvent, len(ev.Events))
+			for i, e := range ev.Events {
+				state.Events[i] = e.toGameEvent()
+			}
 		}
 	}
 
-	enrichObjectiveTimers(state)
 	return state, nil
 }
 
-func enrichObjectiveTimers(state *GameState) {
-	// MVP: infer next dragon from game time (first dragon ~5:00, then ~5min cadence)
-	if state.GameTime > 0 {
-		firstDragon := 300.0
-		interval := 300.0
-		nextSpawn := firstDragon
-		for nextSpawn <= state.GameTime {
-			nextSpawn += interval
-		}
-		left := nextSpawn - state.GameTime
-		if left <= 60 {
-			state.DragonTimer = &DragonInfo{
-				Type:        "unknown",
-				SpawnTime:   nextSpawn,
-				SecondsLeft: left,
-			}
-		}
+type apiGameEvent struct {
+	EventID    int     `json:"EventID"`
+	EventName  string  `json:"EventName"`
+	EventTime  float64 `json:"EventTime"`
+	DragonType string  `json:"DragonType"`
+}
 
-		baronTime := 1200.0
-		if state.GameTime >= baronTime-60 && state.GameTime < baronTime+300 {
-			left := baronTime - state.GameTime
-			if left > 0 && left <= 60 {
-				state.BaronTimer = &BaronInfo{
-					SpawnTime:   baronTime,
-					SecondsLeft: left,
-				}
-			}
-		}
+func (e apiGameEvent) toGameEvent() GameEvent {
+	return GameEvent{
+		EventID:    e.EventID,
+		EventName:  e.EventName,
+		EventTime:  e.EventTime,
+		DragonType: e.DragonType,
 	}
 }
 

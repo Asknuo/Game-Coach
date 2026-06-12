@@ -23,11 +23,13 @@ type Client struct {
 	password     string
 	httpClient   *http.Client
 	available    bool
+	objectives   *ObjectiveTracker
 }
 
 func NewClient(lockfilePath string) *Client {
 	return &Client{
 		lockfilePath: lockfilePath,
+		objectives:   NewObjectiveTracker(),
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
@@ -101,7 +103,12 @@ func (c *Client) FetchGameState(ctx context.Context) (*GameState, error) {
 		return nil, err
 	}
 
-	return ParseGameState(raw)
+	state, err := ParseGameState(raw)
+	if err != nil {
+		return nil, err
+	}
+	c.objectives.Enrich(state)
+	return state, nil
 }
 
 func (c *Client) get(path string) ([]byte, error) {
