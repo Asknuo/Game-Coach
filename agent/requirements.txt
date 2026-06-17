@@ -5,3 +5,6 @@ pydantic>=2.9.0
 redis>=5.2.0
 openai>=1.55.0
 python-dotenv>=1.0.0
+chromadb>=0.5.0
+langgraph>=0.2.0
+langgraph-checkpoint>=0.2.0

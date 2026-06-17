@@ -1,3 +1,3 @@
-from skills import build, dragon, jungle, recall
+from skills import build, dragon, jungle, recall, strategy
 
-__all__ = ["dragon", "recall", "build", "jungle"]
+__all__ = ["dragon", "recall", "build", "jungle", "strategy"]

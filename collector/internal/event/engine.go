@@ -26,6 +26,7 @@ var cooldownDurations = map[string]time.Duration{
 	"low_health":      45 * time.Second,
 	"item_purchased":  30 * time.Second,
 	"jungle_check":    120 * time.Second,
+	"strategy_check":  300 * time.Second,
 }
 
 func (e *Engine) Process(state *lol.GameState) []Event {

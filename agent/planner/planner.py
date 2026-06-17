@@ -6,6 +6,7 @@ EVENT_SKILL_MAP: dict[str, str] = {
     "low_health": "recall",
     "item_purchased": "build",
     "jungle_check": "jungle",
+    "strategy_check": "strategy",
 }
 
 PRIORITY: dict[str, int] = {
@@ -14,6 +15,7 @@ PRIORITY: dict[str, int] = {
     "baron_soon": 2,
     "item_purchased": 1,
     "jungle_check": 1,
+    "strategy_check": 1,
 }
 
 
@@ -25,13 +27,14 @@ class Planner:
         if not skill_name:
             return None
 
-        from skills import build, dragon, jungle, recall
+        from skills import build, dragon, jungle, recall, strategy
 
         registry = {
             "dragon": dragon,
             "recall": recall,
             "build": build,
             "jungle": jungle,
+            "strategy": strategy,
         }
 
         module = registry.get(skill_name)

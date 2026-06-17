@@ -84,10 +84,25 @@ func (d *Detector) Detect(state *lol.GameState) []Event {
 
 	if d.lastState != nil {
 		events = append(events, d.detectJungle(state)...)
+		events = append(events, d.detectStrategy(state)...)
 	}
 
 	d.lastState = state
 	return events
+}
+
+func (d *Detector) detectStrategy(state *lol.GameState) []Event {
+	// Emit strategy_check every 5 minutes after 3:00
+	if int(state.GameTime)/300 > int(d.lastState.GameTime)/300 && state.GameTime >= 180 {
+		return []Event{{
+			Name: "strategy_check",
+			Data: map[string]interface{}{
+				"champion":  state.ActivePlayer.SummonerName,
+				"game_time": state.GameTime,
+			},
+		}}
+	}
+	return nil
 }
 
 func (d *Detector) detectJungle(state *lol.GameState) []Event {
