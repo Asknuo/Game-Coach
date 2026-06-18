@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Game Coach Overlay</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --card-bg: rgba(15, 15, 15, 0.92);
+    --border: rgba(255,255,255,0.08);
+    --text: #e0e0e0;
+    --accent: #00d4aa;
+    --accent2: #a855f7;
+    --muted: #666;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: transparent;
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;
+  }
+  #overlay-container {
+    position: fixed;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+  #tip-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px 28px;
+    min-width: 320px;
+    max-width: 520px;
+    backdrop-filter: blur(16px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.35s ease, transform 0.35s ease;
+  }
+  #tip-card.show {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  #tip-skill {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--accent2);
+    margin-bottom: 6px;
+  }
+  #tip-priority {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 8px;
+  }
+  .prio-high { background: rgba(239,68,68,0.2); color: #ef4444; }
+  .prio-med  { background: rgba(245,158,11,0.2); color: #f59e0b; }
+  .prio-low  { background: rgba(0,212,170,0.2); color: var(--accent); }
+  #tip-message {
+    font-size: 17px;
+    line-height: 1.5;
+    font-weight: 500;
+  }
+  #tip-status {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 8px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+  #controls {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 8px 16px;
+    backdrop-filter: blur(16px);
+  }
+  button {
+    background: none;
+    border: none;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 6px 12px;
+    border-radius: 16px;
+    transition: background 0.2s;
+  }
+  button:hover { background: rgba(255,255,255,0.08); }
+  button.active { color: var(--accent); }
+  #mute-btn { font-size: 18px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; padding: 0; }
+  select {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 14px;
+    font-size: 12px;
+    outline: none;
+  }
+  #conn-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  #conn-dot.disconnected { background: #ef4444; }
+  #test-btn { font-size: 11px; color: var(--muted); }
+  #history-list {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    width: 260px;
+    max-height: 70vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 6px;
+    opacity: 0.35;
+    transition: opacity 0.3s;
+    z-index: 9990;
+  }
+  #history-list:hover { opacity: 0.9; }
+  .history-item {
+    background: rgba(255,255,255,0.04);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .history-item .h-skill { color: var(--accent2); font-weight: 600; font-size: 9px; }
+  .history-item .h-msg { color: #aaa; }
+  .history-item .h-time { color: var(--muted); font-size: 9px; }
+</style>
+</head>
+<body>
+
+<div id="overlay-container">
+  <div id="tip-card">
+    <div id="tip-skill"></div>
+    <div id="tip-message">连接中...</div>
+    <div id="tip-status">
+      <span id="conn-dot"></span>
+      <span id="conn-text">Disconnected</span>
+      <span id="voice-name" style="color:var(--muted);"></span>
+    </div>
+  </div>
+
+  <div id="controls">
+    <select id="voice-select" title="选择语音"></select>
+    <button id="mute-btn" title="静音/取消静音">🔊</button>
+    <button id="test-btn" title="测试语音">测试</button>
+  </div>
+</div>
+
+<div id="history-list"></div>
+
+<script>
+// ── 状态 ──
+let muted = false;
+let ws = null;
+let reconnectTimer = null;
+let selectedVoice = null;
+let voicesLoaded = false;
+
+const tipCard   = document.getElementById('tip-card');
+const tipSkill  = document.getElementById('tip-skill');
+const tipMsg    = document.getElementById('tip-message');
+const connDot   = document.getElementById('conn-dot');
+const connText  = document.getElementById('conn-text');
+const voiceName = document.getElementById('voice-name');
+const muteBtn   = document.getElementById('mute-btn');
+const voiceSel  = document.getElementById('voice-select');
+const testBtn   = document.getElementById('test-btn');
+const historyList = document.getElementById('history-list');
+
+// ── 加载语音列表 ──
+function loadVoices() {
+  const voices = speechSynthesis.getVoices();
+  if (voices.length === 0) return;
+  voicesLoaded = true;
+
+  // 偏好顺序：中文 > 英文
+  const zhVoices = voices.filter(v => v.lang.startsWith('zh'));
+  const enVoices = voices.filter(v => v.lang.startsWith('en'));
+
+  voiceSel.innerHTML = '';
+
+  // 中文语音
+  for (const v of zhVoices) {
+    voiceSel.innerHTML += `<option value="${v.name}">🇨🇳 ${v.name} (${v.lang})</option>`;
+  }
+  // 英文语音
+  for (const v of enVoices) {
+    voiceSel.innerHTML += `<option value="${v.name}">🇺🇸 ${v.name} (${v.lang})</option>`;
+  }
+
+  // 默认选择——优先中文女声
+  const pref = voices.find(v => v.lang === 'zh-CN' && v.name.includes('Xiaoxiao'))
+            || voices.find(v => v.lang.startsWith('zh-CN'))
+            || voices.find(v => v.lang.startsWith('zh'))
+            || voices[0];
+  if (pref) {
+    voiceSel.value = pref.name;
+    selectedVoice = pref;
+    voiceName.textContent = pref.name + ' (' + pref.lang + ')';
+  }
+}
+
+speechSynthesis.onvoiceschanged = loadVoices;
+loadVoices();
+
+voiceSel.addEventListener('change', () => {
+  const voices = speechSynthesis.getVoices();
+  selectedVoice = voices.find(v => v.name === voiceSel.value) || null;
+  if (selectedVoice) {
+    voiceName.textContent = selectedVoice.name + ' (' + selectedVoice.lang + ')';
+  }
+});
+
+// ── 语音播报 ──
+function speak(text) {
+  if (muted) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.voice = selectedVoice || null;
+  u.rate = 1.0;
+  u.pitch = 1.0;
+  u.volume = 0.9;
+  speechSynthesis.speak(u);
+}
+
+muteBtn.addEventListener('click', () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  muteBtn.classList.toggle('active', muted);
+  if (muted) speechSynthesis.cancel();
+});
+
+testBtn.addEventListener('click', () => {
+  speak('你好，我是游戏教练，准备好为你提供建议。');
+});
+
+// ── 显示提示 ──
+let hideTimer = null;
+function showTip(data) {
+  const tip = data.payload || data;
+  const skill = tip.skill || '';
+  const message = tip.message || '';
+  const priority = tip.priority || 1;
+
+  tipSkill.innerHTML = `${skill}`;
+  if (priority >= 3) {
+    tipSkill.innerHTML += ` <span class="prio-high">HIGH</span>`;
+  } else if (priority >= 2) {
+    tipSkill.innerHTML += ` <span class="prio-med">MED</span>`;
+  } else {
+    tipSkill.innerHTML += ` <span class="prio-low">TIP</span>`;
+  }
+  tipMsg.textContent = message;
+
+  clearTimeout(hideTimer);
+  tipCard.classList.add('show');
+
+  // 语音播报
+  speak(message);
+
+  // 添加到历史
+  const now = new Date();
+  const time = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const item = document.createElement('div');
+  item.className = 'history-item';
+  item.innerHTML = `<span class="h-time">${time}</span> <span class="h-skill">${skill}</span><br><span class="h-msg">${message}</span>`;
+  historyList.prepend(item);
+
+  // 8 秒后淡出
+  hideTimer = setTimeout(() => {
+    tipCard.classList.remove('show');
+  }, 8000);
+}
+
+// ── WebSocket ──
+function connect() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+
+  const host = location.hostname || 'localhost';
+  const port = location.port || '8000';
+  const url = `ws://${host}:${port}/ws/overlay`;
+
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    connDot.classList.remove('disconnected');
+    connText.textContent = 'Connected';
+    voiceName.textContent = selectedVoice ? selectedVoice.name + ' (' + selectedVoice.lang + ')' : '';
+    showTip({ payload: { skill: 'SYSTEM', message: '教练已上线，语音播报就绪', priority: 1 } });
+    if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === 'tip') {
+        showTip(data);
+      }
+    } catch (e) {
+      console.error('parse error', e);
+    }
+  };
+
+  ws.onclose = () => {
+    connDot.classList.add('disconnected');
+    connText.textContent = 'Reconnecting...';
+    if (!reconnectTimer) {
+      reconnectTimer = setInterval(connect, 3000);
+    }
+  };
+
+  ws.onerror = () => {
+    ws?.close();
+  };
+}
+
+connect();
+
+// ── 初始加载检查 ──
+if (!voicesLoaded) {
+  setTimeout(() => { loadVoices(); }, 1000);
+}
+</script>
+</body>
+</html>

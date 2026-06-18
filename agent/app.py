@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from graph import build_coaching_graph, set_injections
 from graph.nodes import CoachState
@@ -78,12 +80,50 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Game Coach Agent", lifespan=lifespan)
 
+# ── Overlay WebSocket 广播 ────────────────────────────
+overlay_clients: set[WebSocket] = set()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 挂载静态文件目录
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+@app.get("/overlay")
+async def overlay():
+    """浏览器 Overlay 页面（内置语音）。"""
+    overlay_path = os.path.join(static_dir, "overlay.html")
+    if os.path.exists(overlay_path):
+        return FileResponse(overlay_path)
+    return {"error": "overlay.html not found, run setup first"}
+
+
+@app.websocket("/ws/overlay")
+async def overlay_ws(websocket: WebSocket):
+    """Overlay 专用 WebSocket：接收 tip 并展示+语音播报。"""
+    await websocket.accept()
+    overlay_clients.add(websocket)
+    logger.info("overlay connected (total: %d)", len(overlay_clients))
+    try:
+        # 保持连接，接收心跳或静音指令
+        while True:
+            data = await websocket.receive_text()
+            # 可扩展：mute/unmute 等指令
+            logger.debug("overlay msg: %s", data[:50])
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("overlay ws error")
+    finally:
+        overlay_clients.discard(websocket)
+        logger.info("overlay disconnected (total: %d)", len(overlay_clients))
 
 
 @app.get("/health")
@@ -158,11 +198,22 @@ async def collector_ws(websocket: WebSocket):
         tip = result.get("tip")
         if tip:
             response = WSMessage(type="tip", payload=tip)
+            tip_json = response.model_dump_json()
             try:
-                await websocket.send_text(response.model_dump_json())
+                await websocket.send_text(tip_json)
                 logger.info("[%s] %s", tip["skill"], tip["message"][:80])
             except Exception:
                 logger.warning("Send tip failed (connection closed)")
+
+            # 同时广播给所有 Overlay 客户端（语音播报）
+            dead: list[WebSocket] = []
+            for client in overlay_clients:
+                try:
+                    await client.send_text(tip_json)
+                except Exception:
+                    dead.append(client)
+            for client in dead:
+                overlay_clients.discard(client)
 
     queue.set_handler(handle_coaching)
 

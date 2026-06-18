@@ -8,7 +8,15 @@ logger = logging.getLogger(__name__)
 
 
 class ChromaStore:
-    """ChromaDB 向量存储封装，管理 items 和 champion_guides 两个 Collection."""
+    """ChromaDB 向量存储封装，管理多个 Collection:
+
+    - lol_items:          装备数据
+    - lol_champion_guides: 英雄攻略
+    - lol_champions:       英雄技能数据（来自 Data Dragon）
+    - lol_runes:          符文系统
+    - lol_summoner_spells: 召唤师技能
+    - lol_game_info:       游戏机制/野怪/地图等通用信息
+    """
 
     def __init__(self, persist_dir: str | None = None):
         if persist_dir is None:
@@ -27,6 +35,10 @@ class ChromaStore:
             self.available = False
             self._items = None
             self._guides = None
+            self._champions = None
+            self._runes = None
+            self._summoner_spells = None
+            self._game_info = None
             return
 
         try:
@@ -38,16 +50,40 @@ class ChromaStore:
                 name="lol_champion_guides",
                 metadata={"hnsw:space": "cosine"},
             )
+            self._champions = self.client.get_or_create_collection(
+                name="lol_champions",
+                metadata={"hnsw:space": "cosine"},
+            )
+            self._runes = self.client.get_or_create_collection(
+                name="lol_runes",
+                metadata={"hnsw:space": "cosine"},
+            )
+            self._summoner_spells = self.client.get_or_create_collection(
+                name="lol_summoner_spells",
+                metadata={"hnsw:space": "cosine"},
+            )
+            self._game_info = self.client.get_or_create_collection(
+                name="lol_game_info",
+                metadata={"hnsw:space": "cosine"},
+            )
             self.available = True
             logger.info(
-                "ChromaDB ready: %d items, %d guide chunks",
+                "ChromaDB ready: items=%d guides=%d champions=%d runes=%d spells=%d game_info=%d",
                 self._items.count(),
                 self._guides.count(),
+                self._champions.count(),
+                self._runes.count(),
+                self._summoner_spells.count(),
+                self._game_info.count(),
             )
         except Exception:
             logger.exception("ChromaDB collection init failed")
             self._items = None
             self._guides = None
+            self._champions = None
+            self._runes = None
+            self._summoner_spells = None
+            self._game_info = None
             self.available = False
 
     @property
@@ -61,3 +97,27 @@ class ChromaStore:
         if not self.available:
             return None
         return self._guides
+
+    @property
+    def champions(self):
+        if not self.available:
+            return None
+        return self._champions
+
+    @property
+    def runes(self):
+        if not self.available:
+            return None
+        return self._runes
+
+    @property
+    def summoner_spells(self):
+        if not self.available:
+            return None
+        return self._summoner_spells
+
+    @property
+    def game_info(self):
+        if not self.available:
+            return None
+        return self._game_info

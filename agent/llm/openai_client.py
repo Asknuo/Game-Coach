@@ -52,6 +52,9 @@ class OpenAIClient:
                 f"Gold: {int(state.active_player.current_gold)}"
             )
 
+        # 判断 RAG 是否丰富（多源聚合 vs 简单检索）
+        is_rich = rag_context and len(rag_context) > 200
+
         user_prompt = (
             f"Skill: {tip.skill}\n"
             f"Draft: {tip.message}\n"
@@ -59,7 +62,13 @@ class OpenAIClient:
         )
         if rag_context:
             user_prompt += f"Relevant knowledge: {rag_context}\n"
-        user_prompt += "Rewrite as one short coaching line (max 20 words)."
+
+        if is_rich:
+            user_prompt += "Synthesize into 2-3 short actionable coaching sentences. Prioritize matchup-specific insights."
+            max_tokens = 120
+        else:
+            user_prompt += "Rewrite as one short coaching line (max 20 words)."
+            max_tokens = 60
 
         try:
             response = self._client.chat.completions.create(
@@ -68,7 +77,7 @@ class OpenAIClient:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                max_tokens=60,
+                max_tokens=max_tokens,
                 temperature=0.7,
             )
             text = response.choices[0].message.content

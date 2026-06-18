@@ -8,3 +8,5 @@ python-dotenv>=1.0.0
 chromadb>=0.5.0
 langgraph>=0.2.0
 langgraph-checkpoint>=0.2.0
+pyttsx3>=2.90
+websocket-client>=1.8.0

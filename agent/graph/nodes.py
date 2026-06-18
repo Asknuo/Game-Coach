@@ -146,31 +146,69 @@ def route_skill(state: CoachState) -> CoachState:
 # ── 向量检索 ──────────────────────────────────────────
 
 def retrieve_knowledge(state: CoachState) -> CoachState:
-    """ChromaDB RAG 检索."""
+    """ChromaDB RAG 检索 — 聚合己方+敌方英雄攻略、游戏机制等多源知识。"""
     retriever = _injections.get("retriever")
     if not retriever:
         return state
 
-    champion = ""
     gs = state.get("game_state", {})
+    champion = ""
+    enemy_champion = ""
+    game_time = 0.0
+
     if gs:
-        champion = gs.get("active_player", {}).get("summoner_name", "")
+        active_player = gs.get("active_player", {})
+        champion = active_player.get("summoner_name", "")
+
+        # 获取己方队伍
+        all_players: list[dict] = gs.get("all_players", [])
+        active_team = ""
+        active_pos = active_player.get("position", {})
+        for p in all_players:
+            if p.get("summoner_name") == champion:
+                active_team = p.get("team", "")
+                active_pos = p.get("position", active_pos)
+                break
+
+        # 找对位敌人（同名位置、不同队伍）
+        if active_team and active_pos:
+            active_x = active_pos.get("x", 0) if isinstance(active_pos, dict) else 0
+            active_y = active_pos.get("y", 0) if isinstance(active_pos, dict) else 0
+            best_dist = float("inf")
+            for p in all_players:
+                if p.get("team") and p["team"] != active_team:
+                    enemy_pos = p.get("position", {})
+                    if isinstance(enemy_pos, dict):
+                        ex = enemy_pos.get("x", 0)
+                        ey = enemy_pos.get("y", 0)
+                        dist = ((active_x - ex) ** 2 + (active_y - ey) ** 2) ** 0.5
+                        # 优先选近距离的（同一条路）
+                        if dist < best_dist and dist < 5000:
+                            best_dist = dist
+                            enemy_champion = p.get("summoner_name", "")
+
+        game_time = gs.get("game_time", 0)
 
     rag_query = state.get("rag_query", "")
-    docs: list[str] = []
+    event_name = state.get("event_name", "")
 
-    # 先查攻略
-    if champion and rag_query:
-        guide = retriever.search_guide(champion, rag_query, n=2)
-        docs.extend([r["document"] for r in (guide or [])])
+    # 使用聚合方法，一次性整合多源知识
+    aggregated = retriever.aggregate_coaching_context(
+        ally_champion=champion,
+        enemy_champion=enemy_champion if enemy_champion != champion else None,
+        game_time=game_time,
+        event_name=event_name,
+        event_query=rag_query,
+    )
 
-    # 装备类事件额外查装备库
-    if state["event_name"] == "item_purchased":
-        items = retriever.search_items(rag_query, n=2)
-        docs.extend([r["document"] for r in (items or [])])
+    if aggregated:
+        # 聚合文本为一条，LLM 润色时能直接使用
+        state["rag_docs"] = [aggregated]
+    else:
+        state["rag_docs"] = []
 
-    logger.debug("retrieve: %d docs for %s", len(docs), state["event_name"])
-    return {**state, "rag_docs": docs}
+    logger.debug("retrieve: %d aggregated docs for %s", len(state["rag_docs"]), event_name)
+    return state
 
 
 # ── 记忆注入 ──────────────────────────────────────────

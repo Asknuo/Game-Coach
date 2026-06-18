@@ -1,0 +1,127 @@
+[
+  {
+    "category": "map",
+    "name": "Summoner's Rift",
+    "description": "Summoner's Rift is the primary competitive map in League of Legends. It features 3 lanes (Top, Mid, Bottom), a jungle with 4 quadrants, and 2 bases. Neutral objectives include Baron Nashor, Rift Herald, Void Grubs, Elemental Dragons, and the Elder Dragon. The map is symmetrical and the primary mode for ranked and professional play."
+  },
+  {
+    "category": "map",
+    "name": "Howling Abyss",
+    "description": "Howling Abyss is a single-lane map for ARAM (All Random All Mid) mode. It features no jungle, constant team fights, and health relics that spawn periodically. Players cannot recall to base to heal or buy items."
+  },
+  {
+    "category": "objective",
+    "name": "Baron Nashor",
+    "description": "Baron Nashor is the most powerful neutral monster on Summoner's Rift. It spawns at 20 minutes and respawns 6 minutes after being killed (or 7 minutes after the first spawning of the game). Killing Baron Nashor grants the team Hand of Baron buff for 180 seconds: 40 bonus AD, 80 bonus AP, Empowered Recall (reduced to 4 seconds), and Empowered Minions near champions. Baron has very high health and deals massive damage, usually requiring a coordinated team effort to kill."
+  },
+  {
+    "category": "objective",
+    "name": "Rift Herald",
+    "description": "Rift Herald (Shelly) spawns at the Baron pit at 14 minutes and despawns at 19:45 (replaced by Baron at 20:00). Only one Rift Herald spawns per game. When killed, it drops the Eye of the Herald which a player can pick up and channel to summon the Rift Herald in a lane. The summoned Herald charges at enemy towers, dealing massive true damage (2000-2500+ based on current HP). It has a weak spot on its back that deals bonus damage when attacked."
+  },
+  {
+    "category": "objective",
+    "name": "Void Grubs",
+    "description": "Void Grubs are 3 small void monsters that spawn in the Baron pit at 5 minutes (or 6 minutes in 2024 update). They despawn at 13:45 or after Baron spawns. Killing them grants the team a stacking Touch of the Void buff: dealing damage to structures spawns Voidmites that attack the tower. Killing 3 Void Grubs gives one Voidmite per attack, killing 4+ gives two Voidmites per attack. Killing 5-6 gives a boosted version with more Voidmites. They respawn once if killed before despawn."
+  },
+  {
+    "category": "objective",
+    "name": "Elemental Dragons",
+    "description": "Elemental Dragons spawn in the dragon pit at 5 minutes. Each dragon has an element - Cloud, Infernal, Mountain, Ocean, Chemtech, or Hextech - with unique buffs. Cloud grants slow resist and out-of-combat movement speed. Infernal grants AD and AP percentage increase. Mountain grants armor and magic resist. Ocean grants health regeneration. Chemtech grants tenacity and healing/shielding power. Hextech grants attack speed and ability haste. Only 3 elements appear per game (determined by which dragons spawn). Dragon Soul is awarded to the team that kills 4 dragons, providing a powerful permanent buff specific to the dominant element."
+  },
+  {
+    "category": "objective",
+    "name": "Elder Dragon",
+    "description": "Elder Dragon spawns 6 minutes after a team claims Dragon Soul, replacing all Elemental Dragon spawns. It respawns 6 minutes after being killed. Killing Elder Dragon grants the Elder Dragon buff for 150 seconds: all damage applies a burn that executes enemies below 20% max HP (threshold increases with more Elder kills). This is the most powerful neutral objective in the game and often decides the outcome."
+  },
+  {
+    "category": "monster",
+    "name": "Red Brambleback (Red Buff)",
+    "description": "The Red Brambleback is a large jungle monster that grants the Crest of Cinders (Red Buff) when killed. Red Buff grants health regeneration out of combat and causes basic attacks to slow enemies and deal true damage over time for 120 seconds. The Red Brambleback spawns at 1:30 and respawns every 5 minutes. It has high HP and attack damage."
+  },
+  {
+    "category": "monster",
+    "name": "Blue Sentinel (Blue Buff)",
+    "description": "The Blue Sentinel is a large jungle monster that grants the Crest of Insight (Blue Buff) when killed. Blue Buff grants increased mana/energy regeneration and 10 ability haste for 120 seconds. The Blue Sentinel spawns at 1:30 and respawns every 5 minutes. It is essential for mana-hungry champions."
+  },
+  {
+    "category": "monster",
+    "name": "Gromp",
+    "description": "Gromp is a medium-sized jungle monster found near the Blue Sentinel. It deals high initial damage but its attack speed slows over time. Grants gold and experience. It spawns at 1:30 and respawns every 2 minutes."
+  },
+  {
+    "category": "monster",
+    "name": "Krugs",
+    "description": "Krugs are a pair of medium stone monsters found near the Red Brambleback. The Ancient Krug splits into 2 smaller Krugs when killed, which split further into 4 mini Krugs. They grant significant gold and experience. The camp spawns at 1:30 and respawns every 2 minutes."
+  },
+  {
+    "category": "monster",
+    "name": "Wolves",
+    "description": "Wolves are a camp of 3 monsters (1 Greater Murk Wolf and 2 Lesser Murk Wolves) in the blue-side jungle. The Greater Murk Wolf has moderate HP and damage. They grant gold and experience. Spawns at 1:30 and respawns every 2 minutes."
+  },
+  {
+    "category": "monster",
+    "name": "Raptors (Chickens)",
+    "description": "Raptors are a camp of 4 small raptors and 1 Crimson Raptor in the red-side jungle. The Crimson Raptor has more HP and damage. They deal good damage early and are a primary farming camp for mid laners. Spawns at 1:30 and respawns every 2 minutes."
+  },
+  {
+    "category": "monster",
+    "name": "Scuttle Crab (Rift Scuttler)",
+    "description": "The Rift Scuttler is a neutral monster that patrols the river. There are two - one in the top river and one in the bottom river. When killed, it grants gold, experience, mana and health regeneration, and creates a Speed Shrine in that river section that grants vision and movement speed to allies passing through. The first Scuttle Crabs spawn at 3:30. Jungle monsters do not attack it, so crowd control abilities are needed to reduce its resistances."
+  },
+  {
+    "category": "mechanic",
+    "name": "Experience (XP) System",
+    "description": "Champions gain experience by being near dying enemy units. Shared experience is split among nearby allied champions (more champions = less XP per champion). Solo lane champions level faster. Jungle monster kills grant full XP to the killer only. Champion kills/assists grant bonus XP. Level breakpoints: Level 6 (Ultimate unlock), Level 11 (Rank 2 Ultimate), Level 16 (Rank 3 Ultimate). Maximum level is 18. Minion waves grant increasing XP as game time progresses."
+  },
+  {
+    "category": "mechanic",
+    "name": "Gold System",
+    "description": "Gold is earned through: last-hitting minions (14g melee, 21g caster, 40g siege pre-14min), passive income (20.4g per 10 seconds), champion kills/assists, turret plates (125g each before 14min), turret destruction (250g+ per turret), and jungle camps. First turret destroyed globally grants bonus 150g. Bounty system provides bonus gold for killing enemies on killstreaks. Runes like First Strike and Treasure Hunter provide additional gold."
+  },
+  {
+    "category": "mechanic",
+    "name": "Turret (Tower) System",
+    "description": "Turrets deal increasing damage with consecutive attacks on the same target. Outer turrets have Fortification for the first 5 minutes, reducing all damage taken by 50%. Turret Plates on outer turrets grant 125g each when destroyed (5 plates per turret), removed at 14 minutes. Inner and Inhibitor turrets are stronger. Nexus turrets are the strongest. Turrets have Backdoor bonus (reduced damage taken when no enemy minions nearby). Turrets grant global gold to the team. Inhibitor destruction spawns Super Minions in that lane."
+  },
+  {
+    "category": "mechanic",
+    "name": "Inhibitor System",
+    "description": "Inhibitors are structures that protect the Nexus. When destroyed, Super Minions begin spawning in that lane for 5 minutes. After 5 minutes, the inhibitor respawns. Super Minions are much stronger than regular minions. Destroying all 3 inhibitors causes 2 Super Minions per wave per lane. Inhibitors are priority targets for sieging."
+  },
+  {
+    "category": "mechanic",
+    "name": "Minion Waves",
+    "description": "Minion waves spawn every 30 seconds from the Nexus. Standard waves consist of 3 melee minions and 3 caster minions. Every 3rd wave (starting wave 3) includes a Siege Minion before 15 minutes, then every 2 waves from 15-25 min, then every wave from 25+ min. Siege minions deal bonus damage to turrets and take reduced turret damage. Cannon minions spawn after 35 minutes in large numbers. Minions grow stronger as game time progresses, gaining HP and damage."
+  },
+  {
+    "category": "mechanic",
+    "name": "Bounty System",
+    "description": "Bounties are bonus gold awarded for killing enemy champions on killstreaks. A champion on a 3-kill streak has a 150g bounty, scaling up to 700g for 7+ kills. Objective bounties can also appear on turrets, dragons, and Baron when a team is significantly behind in gold, giving comeback potential."
+  },
+  {
+    "category": "mechanic",
+    "name": "Recall (Back) System",
+    "description": "Recall is the primary way champions return to fountain. Channeling takes 8 seconds and is interrupted by enemy champion damage, immobilizing crowd control, or displacement. Empowered Recall from Baron buff reduces channel time to 4 seconds. Recalling is essential for buying items and healing. Good recall timing is a critical skill - recall when the enemy cannot punish you or interrupt the channel."
+  },
+  {
+    "category": "mechanic",
+    "name": "Vision System",
+    "description": "Vision determines what your team can see on the map. Sources of vision include: allied units (champions, minions, pets), wards (Stealth Wards from support item, Control Wards, Farsight Alteration), turrets, and certain abilities. Stealth Wards last 90-120 seconds, are invisible but can be detected by Control Wards and Oracle Lens. Control Wards (Pink Wards) are visible, have 4 HP, disable and reveal nearby enemy wards, and last until destroyed. Oracle Lens (Sweeper) reveals nearby invisible units for 10 seconds. Vision score tracks ward effectiveness."
+  },
+  {
+    "category": "mechanic",
+    "name": "Summoner Spell System",
+    "description": "Each champion selects 2 summoner spells before the game starts. Flash (254s CD) is the most common - it blinks the champion a short distance. Other key spells include: Teleport (360s CD), Ignite (180s CD, deals true damage and applies Grievous Wounds), Smite (15-90s CD, required for junglers, deals true damage to monsters), Ghost (210s CD, grants movement speed), Barrier (180s CD, grants temporary shield), Cleanse (210s CD, removes CC), Heal (240s CD, heals you and an ally), and Exhaust (210s CD, reduces enemy damage)."
+  },
+  {
+    "category": "mechanic",
+    "name": "Crowd Control (CC) System",
+    "description": "CC effects control enemy movement and actions. Categories: Knockups (uncleansable, stops all actions), Stuns (can be cleansed, stops all actions), Roots/Snares (can be cleansed, stops movement but allows actions), Suppression (uncleansable except by QSS/Mikael's), Silence (prevents ability casts), Blind (basic attacks miss), Disarm (prevents basic attacks), Slow (reduces movement speed), Charm/Fear/Taunt (force movement), Knockback/Pull (displacement), Sleep (delayed stun). Tenacity reduces CC duration (stacks multiplicatively)."
+  },
+  {
+    "category": "mechanic",
+    "name": "Damage Types",
+    "description": "Three damage types exist in League: Physical Damage (reduced by Armor), Magic Damage (reduced by Magic Resist), and True Damage (not reduced by resistances). Lethality penetrates flat armor for physical damage. Percentage Armor Penetration/Magic Penetration ignores a percentage of the target's resists. Flat Magic Penetration ignores a flat amount. Grievous Wounds reduces healing received by 40%."
+  }
+]
