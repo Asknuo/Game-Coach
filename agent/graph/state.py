@@ -28,8 +28,10 @@ class CoachState(TypedDict):
 
     # ── Planning（route_skill） ──
     skill_name: str
-    skill_message: str                 # skill.generate() 模板输出
+    skill_message: str                 # Planner.plan() 基础消息
     rag_query: str                     # 向量检索查询文本
+    skill_context: str                 # SKILL.md 正文（coaching 指导方针）
+    skill_gotchas: str                 # gotchas.md 坑点清单
 
     # ── Retrieval（retrieve_knowledge） ──
     rag_docs: list[str]                # ChromaDB 检索结果摘要

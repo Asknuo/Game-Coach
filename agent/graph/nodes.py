@@ -46,6 +46,8 @@ def parse_event(state: CoachState) -> CoachState:
         "rag_query": "",
         "rag_docs": [],
         "memory_context": "",
+        "skill_context": "",     # SKILL.md 正文
+        "skill_gotchas": "",     # 坑点清单
         "polished_message": "",
         "should_publish": False,
         "skip_reason": "",
@@ -64,7 +66,7 @@ def detect_signals(state: CoachState) -> CoachState:
     signals: list[str] = []
     priority = 1
 
-    # 死亡时跳过低优先级事件
+    # 死亡时跳过非龙/大龙事件
     active = gs.get("active_player", {}) if gs else {}
     hp = active.get("current_health", 1)
     max_hp = active.get("max_health", 1)
@@ -95,7 +97,7 @@ def detect_signals(state: CoachState) -> CoachState:
     elif name == "item_purchased":
         priority = 1
         signals.append("power_spike")
-    elif name in ("jungle_check", "strategy_check"):
+    elif name in ("laning_check", "macro_check", "jungle_check", "strategy_check"):
         priority = 1
 
     logger.debug("detect_signals: %s signals=%s priority=%d", name, signals, priority)
@@ -105,26 +107,38 @@ def detect_signals(state: CoachState) -> CoachState:
 # ── 路由到 Skill ──────────────────────────────────────
 
 def route_skill(state: CoachState) -> CoachState:
-    """事件名 → Skill 模板生成."""
+    """事件名 → Skill，加载 SKILL.md 上下文和坑点清单."""
     planner = _injections["planner"]
 
     from models.state import CoachEvent
+    from planner.planner import get_skill_context, get_skill_gotchas
 
     event = CoachEvent(
         name=state["event_name"],
         data=state["event_data"],
     )
     tip = planner.plan(event, None)
-    if tip:
-        logger.debug("route_skill: %s → %s", state["event_name"], tip.skill)
-        return {
-            **state,
-            "skill_name": tip.skill,
-            "skill_message": tip.message,
-        }
-    else:
+
+    if not tip:
         logger.debug("route_skill: %s → no skill matched", state["event_name"])
         return {**state, "is_valid": False, "skip_reason": "no_skill"}
+
+    skill_name = tip.skill
+
+    # ── 加载 SKILL.md 正文和坑点清单 ──
+    skill_context = get_skill_context(skill_name)
+    skill_gotchas = get_skill_gotchas(skill_name)
+
+    state["skill_name"] = skill_name
+    state["skill_message"] = tip.message
+    state["skill_context"] = skill_context
+    state["skill_gotchas"] = skill_gotchas
+
+    logger.debug(
+        "route_skill: %s → %s (context: %d chars, gotchas: %d chars)",
+        state["event_name"], skill_name,
+        len(skill_context), len(skill_gotchas),
+    )
 
     # rag_query: skill message + event context 拼接
     query_parts = [state["skill_message"]]
@@ -146,7 +160,7 @@ def route_skill(state: CoachState) -> CoachState:
 # ── 向量检索 ──────────────────────────────────────────
 
 def retrieve_knowledge(state: CoachState) -> CoachState:
-    """ChromaDB RAG 检索 — 聚合己方+敌方英雄攻略、游戏机制等多源知识。"""
+    """ChromaDB RAG 检索 — 聚合己方+敌方英雄攻略、游戏机制等多源知识."""
     retriever = _injections.get("retriever")
     if not retriever:
         return state
@@ -160,7 +174,6 @@ def retrieve_knowledge(state: CoachState) -> CoachState:
         active_player = gs.get("active_player", {})
         champion = active_player.get("summoner_name", "")
 
-        # 获取己方队伍
         all_players: list[dict] = gs.get("all_players", [])
         active_team = ""
         active_pos = active_player.get("position", {})
@@ -170,7 +183,6 @@ def retrieve_knowledge(state: CoachState) -> CoachState:
                 active_pos = p.get("position", active_pos)
                 break
 
-        # 找对位敌人（同名位置、不同队伍）
         if active_team and active_pos:
             active_x = active_pos.get("x", 0) if isinstance(active_pos, dict) else 0
             active_y = active_pos.get("y", 0) if isinstance(active_pos, dict) else 0
@@ -182,7 +194,6 @@ def retrieve_knowledge(state: CoachState) -> CoachState:
                         ex = enemy_pos.get("x", 0)
                         ey = enemy_pos.get("y", 0)
                         dist = ((active_x - ex) ** 2 + (active_y - ey) ** 2) ** 0.5
-                        # 优先选近距离的（同一条路）
                         if dist < best_dist and dist < 5000:
                             best_dist = dist
                             enemy_champion = p.get("summoner_name", "")
@@ -192,7 +203,6 @@ def retrieve_knowledge(state: CoachState) -> CoachState:
     rag_query = state.get("rag_query", "")
     event_name = state.get("event_name", "")
 
-    # 使用聚合方法，一次性整合多源知识
     aggregated = retriever.aggregate_coaching_context(
         ally_champion=champion,
         enemy_champion=enemy_champion if enemy_champion != champion else None,
@@ -202,7 +212,6 @@ def retrieve_knowledge(state: CoachState) -> CoachState:
     )
 
     if aggregated:
-        # 聚合文本为一条，LLM 润色时能直接使用
         state["rag_docs"] = [aggregated]
     else:
         state["rag_docs"] = []
@@ -219,7 +228,6 @@ def inject_memory(state: CoachState) -> CoachState:
     if not injector:
         return state
 
-    # 从 app 全局获取当前 memory
     from memory.models import PlayerMemory
 
     import app as _app
@@ -227,7 +235,7 @@ def inject_memory(state: CoachState) -> CoachState:
     if memory is None:
         return state
 
-    ctx = injector.format(memory, token_budget=250)
+    ctx = injector.format(memory, token_budget=200)
     logger.debug("inject_memory: %d chars", len(ctx))
     return {**state, "memory_context": ctx}
 
@@ -235,7 +243,7 @@ def inject_memory(state: CoachState) -> CoachState:
 # ── LLM 润色 ──────────────────────────────────────────
 
 def llm_polish(state: CoachState) -> CoachState:
-    """调用 DeepSeek/OpenAI LLM 润色教练建议."""
+    """调用 LLM 润色教练建议，注入 SKILL.md 上下文 + 坑点清单."""
     llm = _injections.get("llm")
     if not llm or not llm._client:
         return {**state, "polished_message": state["skill_message"]}
@@ -248,20 +256,31 @@ def llm_polish(state: CoachState) -> CoachState:
         priority=state["priority"],
     )
 
-    # 拼接 RAG + 记忆上下文
-    rag_ctx = None
+    # ── 构建增强上下文：SKILL.md + gotchas + RAG + memory ──
     parts = []
+
+    # 1. SKILL.md 正文（skill 的 coaching 指导方针）
+    if state.get("skill_context"):
+        parts.append("=== Coaching Guidelines ===\n" + state["skill_context"])
+
+    # 2. 坑点清单（最高信号内容）
+    if state.get("skill_gotchas"):
+        parts.append("=== CRITICAL Gotchas (do NOT give wrong advice) ===\n" + state["skill_gotchas"])
+
+    # 3. RAG 知识
     if state.get("rag_docs"):
-        parts.append("Knowledge:\n" + "\n".join(state["rag_docs"][:2]))
+        parts.append("=== Game Knowledge ===\n" + "\n".join(state["rag_docs"][:2]))
+
+    # 4. 记忆
     if state.get("memory_context"):
-        parts.append("Player:\n" + state["memory_context"])
-    if parts:
-        rag_ctx = "\n".join(parts)
+        parts.append("=== Player Context ===\n" + state["memory_context"])
+
+    rag_ctx = "\n\n".join(parts) if parts else None
 
     try:
         result = llm.polish(tip, None, rag_context=rag_ctx)
         state["polished_message"] = result.message
-        logger.debug("llm_polish: %s", state["polished_message"][:60])
+        logger.debug("llm_polish: %s", state["polished_message"][:80])
     except Exception:
         logger.exception("llm_polish failed")
         state["polished_message"] = state["skill_message"]

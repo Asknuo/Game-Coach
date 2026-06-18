@@ -22,7 +22,7 @@ from memory.queue import MemoryQueue
 from memory.redis_store import RedisStore
 from memory.store import MemoryStore
 from models.state import CoachEvent, GameState, WSMessage
-from planner.planner import Planner
+from planner.planner import SKILL_REGISTRY, EVENT_TO_SKILL, Planner
 
 load_dotenv()
 
@@ -248,11 +248,12 @@ async def collector_ws(websocket: WebSocket):
                     if hp_pct == 0 and event.name not in ("dragon_soon", "baron_soon"):
                         continue
 
-                # 优先级
-                prio = {
-                    "low_health": 3, "dragon_soon": 2, "baron_soon": 2,
-                    "item_purchased": 1, "jungle_check": 1, "strategy_check": 1,
-                }.get(event.name, 1)
+                # 优先级（从 SKILL_REGISTRY 获取）
+                skill_name = EVENT_TO_SKILL.get(event.name, "")
+                meta = SKILL_REGISTRY.get(skill_name, {})
+                prio = meta.get("priority", 1)
+                if event.name in ("dragon_soon", "baron_soon") and event.data.get("seconds_left", 99) <= 10:
+                    prio = 3  # 即将刷新升级为高优先级
 
                 await queue.enqueue({
                     "event": event,
