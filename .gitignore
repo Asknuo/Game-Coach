@@ -1,24 +1,56 @@
-# Go
+# ── Go ──
 collector/bin/
 *.exe
 *.test
 
-# Python
-agent/__pycache__/
-agent/**/__pycache__/
+# ── Python ──
+__pycache__/
+**/__pycache__/
 *.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── 虚拟环境 ──
 .venv/
 venv/
-.env
 
-# IDE
+# ── 敏感配置 ──
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+credentials.json
+secrets.*
+config.local.*
+
+# ── 向量数据库 ──
+chroma_db/
+*.chroma/
+chroma_data/
+
+# ── 运行时数据 ──
+*.log
+memory/
+agent/memory/
+
+# ── IDE ──
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
+.trae/
 
-# OS
+# ── OS ──
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Logs
-*.log
+# ── Node（如果有前端） ──
+node_modules/
+.npm/
+.next/
+dist-frontend/
