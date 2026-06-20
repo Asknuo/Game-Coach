@@ -24,12 +24,19 @@ type ActivePlayer struct {
 	Health       float64 `json:"health"`
 	MaxHealth    float64 `json:"max_health"`
 	Position     Vec2    `json:"position"`
+	Items        []Item  `json:"items"`
 }
 
 type Player struct {
 	SummonerName string  `json:"summoner_name"`
 	Team         string  `json:"team"`
+	ChampionName string  `json:"champion_name"`
 	Level        int     `json:"level"`
+	Kills        int     `json:"kills"`
+	Deaths       int     `json:"deaths"`
+	Assists      int     `json:"assists"`
+	CurrentGold  float64 `json:"current_gold"`
+	CreepScore   int     `json:"creep_score"`
 	Health       float64 `json:"health"`
 	MaxHealth    float64 `json:"max_health"`
 	Position     Vec2    `json:"position"`
@@ -92,26 +99,41 @@ func ParseGameState(raw []byte) (*GameState, error) {
 				CurrentHealth float64 `json:"currentHealth"`
 				MaxHealth     float64 `json:"maxHealth"`
 			} `json:"championStats"`
+			Items []struct {
+				ItemID int `json:"itemID"`
+				Slot   int `json:"slot"`
+			} `json:"items"`
 		}
 		if err := json.Unmarshal(data, &ap); err == nil {
+			items := make([]Item, 0, len(ap.Items))
+			for _, it := range ap.Items {
+				items = append(items, Item{ItemID: it.ItemID, Slot: it.Slot})
+			}
 			state.ActivePlayer = ActivePlayer{
 				SummonerName: ap.SummonerName,
 				Level:        ap.Level,
 				CurrentGold:  ap.CurrentGold,
 				Health:       ap.ChampionStats.CurrentHealth,
 				MaxHealth:    ap.ChampionStats.MaxHealth,
+				Items:        items,
 			}
 		}
 	}
 
 	if data, ok := root["allPlayers"]; ok {
 		var players []struct {
-			SummonerName string `json:"summonerName"`
-			Team         string `json:"team"`
-			Level        int    `json:"level"`
+			SummonerName string  `json:"summonerName"`
+			Team         string  `json:"team"`
+			ChampionName string  `json:"championName"`
+			Level        int     `json:"level"`
+			CurrentGold  float64 `json:"currentGold"`
 			Scores       struct {
 				Health     float64 `json:"health"`
 				MaxHealth  float64 `json:"maxHealth"`
+				Kills      int     `json:"kills"`
+				Deaths     int     `json:"deaths"`
+				Assists    int     `json:"assists"`
+				CreepScore int     `json:"creepScore"`
 			} `json:"scores"`
 			Position struct {
 				X float64 `json:"x"`
@@ -131,7 +153,13 @@ func ParseGameState(raw []byte) (*GameState, error) {
 				state.AllPlayers = append(state.AllPlayers, Player{
 					SummonerName: p.SummonerName,
 					Team:         p.Team,
+					ChampionName: p.ChampionName,
 					Level:        p.Level,
+					Kills:        p.Scores.Kills,
+					Deaths:       p.Scores.Deaths,
+					Assists:      p.Scores.Assists,
+					CurrentGold:  p.CurrentGold,
+					CreepScore:   p.Scores.CreepScore,
 					Health:       p.Scores.Health,
 					MaxHealth:    p.Scores.MaxHealth,
 					Position:     Vec2{X: p.Position.X, Y: p.Position.Y},

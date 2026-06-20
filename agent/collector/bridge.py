@@ -102,12 +102,19 @@ class CollectorBridge:
 
         elif event_type == "lcu_game_start":
             # LCU 检测到游戏开始 → 发送 context 事件给 Agent
+            champion = payload.get("champion_name", "") or payload.get("championName", "")
+            position = payload.get("assigned_position", "") or payload.get("assignedPosition", "")
             msg = {"type": "event", "payload": {
                 "name": "game_start",
-                "data": payload,
+                "data": {
+                    "summoner_name": payload.get("summoner_name", ""),
+                    "champion_name": champion,
+                    "assigned_position": position,
+                },
             }}
             self._enqueue(msg)
-            logger.info("游戏开始上下文已发送: %s", payload.get("summoner_name", "?"))
+            logger.info("游戏开始上下文已发送: %s (%s %s)", 
+                       payload.get("summoner_name", "?"), champion, position)
 
         elif event_type == "gameflow_phase_change":
             old_phase = payload.get("old_phase", "")
@@ -116,6 +123,11 @@ class CollectorBridge:
 
             if new_phase == "EndOfGame":
                 self.game_active = False
+                msg = {"type": "event", "payload": {
+                    "name": "game_end",
+                    "data": {"duration": payload.get("game_time", 0)},
+                }}
+                self._enqueue(msg)
                 logger.info("对局结束")
 
         elif event_type == "lcu_champion_picked":

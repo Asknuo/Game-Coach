@@ -35,7 +35,7 @@ HAS_EDGE_TTS = False
 HAS_PYTTSX3 = False
 
 try:
-    import edge_tts
+    import edge_tts # type: ignore
     HAS_EDGE_TTS = True
 except ImportError:
     pass
@@ -531,13 +531,9 @@ def main():
     tts = TTSEngine()
     logger.info("TTS engine: %s", tts.engine_name)
 
-    # 先创建 pet，再启动 WS 线程
-    ws_thread = threading.Thread(target=_start_ws, args=(None,), daemon=True)
-    pet = DesktopPet(tts, ws_thread)
-
-    # 设置 WS 线程的 pet 引用
-    ws_thread._target = _start_ws
-    ws_thread._args = (pet,)
+    # 先创建 pet，再启动 WS 线程（用 lambda 闭包正确传参）
+    pet = DesktopPet(tts, None)
+    ws_thread = threading.Thread(target=lambda: _start_ws(pet), daemon=True)
 
     ws_thread.start()
     pet.run()

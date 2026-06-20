@@ -22,6 +22,7 @@ class UserContext(BaseModel):
     kda: dict[str, int] = Field(default_factory=lambda: {"kills": 0, "deaths": 0, "assists": 0})
     game_phase: str = "early"       # early / mid / late
     top_of_mind: list[str] = Field(default_factory=list)
+    context: dict[str, Any] = Field(default_factory=dict)
     updated_at: str = ""
 
 

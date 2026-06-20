@@ -68,7 +68,7 @@ def detect_signals(state: CoachState) -> CoachState:
 
     # 死亡时跳过非龙/大龙事件
     active = gs.get("active_player", {}) if gs else {}
-    hp = active.get("current_health", 1)
+    hp = active.get("health", 1)
     max_hp = active.get("max_health", 1)
     hp_pct = hp / max_hp * 100 if max_hp > 0 else 100
 
@@ -78,21 +78,16 @@ def detect_signals(state: CoachState) -> CoachState:
 
     # ── 信号分类 ──
     if name == "low_health":
-        # ★ 上下文抑制：避免无意义的低血量提示
-        from models.state import get_position_distance
+        # 上下文抑制：避免无意义的低血量提示
+        from models.state import get_position_distance, is_position_valid
 
         # 1. 在泉水附近 — 已经回城/正在回复，不发
         active_pos = active.get("position", {"x": 0, "y": 0})
-        fountain_dist = get_position_distance(active_pos, {"x": 0, "y": 0})
-        if fountain_dist < 1500:
-            logger.debug("detect_signals: skip low_health (in fountain)")
-            return {**state, "is_valid": False, "skip_reason": "in_fountain"}
-
-        # 2. 刚击杀敌人（< 5s）— 刚赢了一波，给正面反馈
-        kill_count_before = gs.get("kill_count_before", 0) if gs else 0
-        if data.get("total_kills", 0) > kill_count_before:
-            logger.debug("detect_signals: skip low_health (just killed enemy)")
-            return {**state, "is_valid": False, "skip_reason": "just_killed_enemy"}
+        if is_position_valid(active_pos):
+            fountain_dist = get_position_distance(active_pos, {"x": 0, "y": 0})
+            if fountain_dist < 1500:
+                logger.debug("detect_signals: skip low_health (in fountain)")
+                return {**state, "is_valid": False, "skip_reason": "in_fountain"}
 
         priority = 3
         signals.append("low_health")
@@ -113,6 +108,34 @@ def detect_signals(state: CoachState) -> CoachState:
     elif name == "item_purchased":
         priority = 1
         signals.append("power_spike")
+    elif name == "item_upgraded":
+        priority = 1
+        signals.append("power_spike")
+    elif name == "gold_spike":
+        priority = 1
+        signals.append("power_spike")
+    elif name == "kill":
+        priority = 2
+        signals.append("kill_secured")
+    elif name == "death":
+        priority = 2
+        signals.append("player_died")
+    elif name == "teamfight_detected":
+        priority = 2
+        signals.append("teamfight")
+    elif name == "enemy_gold_lead":
+        priority = 2
+        signals.append("enemy_power_spike")
+        signals.append("danger")
+    elif name == "enemy_fed":
+        priority = 3
+        signals.append("enemy_fed")
+        signals.append("danger")
+    elif name == "enemy_item_purchased":
+        priority = 1
+        signals.append("enemy_power_spike")
+    elif name in ("item_sold", "enemy_item_sold"):
+        priority = 1
     elif name in ("laning_check", "macro_check", "jungle_check", "strategy_check"):
         priority = 1
 
@@ -202,6 +225,16 @@ def route_skill(state: CoachState) -> CoachState:
     elif state["event_name"] == "kill":
         kills = state.get("event_data", {}).get("total_kills", 1)
         query_parts.append(f"after getting kill {kills} what to do objective push tower dragon capitalize advantage")
+    elif state["event_name"] == "enemy_gold_lead":
+        event_data = state.get("event_data", {})
+        enemy_champ = event_data.get("enemy_champion", "")
+        gap = event_data.get("gold_gap", 0)
+        query_parts.append(f"enemy {enemy_champ} has {gap:.0f} gold lead how to play from behind counter fed enemy")
+    elif state["event_name"] == "enemy_fed":
+        event_data = state.get("event_data", {})
+        enemy_champ = event_data.get("enemy_champion", "")
+        kills = event_data.get("kills", 0)
+        query_parts.append(f"enemy {enemy_champ} fed {kills} kills how to shut down shutdown target counter")
     else:
         query_parts.append("strategy tips priority")
 
@@ -223,8 +256,8 @@ def retrieve_knowledge(state: CoachState) -> CoachState:
     game_time = 0.0
     event_name = state.get("event_name", "")
 
-    # ★ enemy_item_purchased 事件：直接用事件数据中的敌方英雄
-    if event_name == "enemy_item_purchased":
+    # ★ enemy events: 直接用事件数据中的敌方英雄
+    if event_name in ("enemy_item_purchased", "enemy_gold_lead", "enemy_fed"):
         event_data = state.get("event_data", {})
         enemy_champion = event_data.get("enemy_champion", "")
 

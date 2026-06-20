@@ -29,6 +29,8 @@ func main() {
 	if v := os.Getenv("POLL_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v + "s"); err == nil {
 			cfg.PollInterval = d
+		} else {
+			log.Printf("WARNING: invalid POLL_INTERVAL=%q, using default %v", v, cfg.PollInterval)
 		}
 	}
 
@@ -89,6 +91,9 @@ func runLoop(ctx context.Context, client *lol.Client, engine *event.Engine, ws *
 			state, err := client.FetchGameState(ctx)
 			if err != nil {
 				log.Printf("fetch state: %v", err)
+				// Reset detector on fetch failure to avoid stale-state
+				// jump on next success (periodic checks rely on lastState).
+				engine.Reset()
 				continue
 			}
 

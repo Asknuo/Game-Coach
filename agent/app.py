@@ -23,7 +23,6 @@ from memory.redis_store import RedisStore
 from memory.store import MemoryStore
 from models.state import CoachEvent, GameState, WSMessage
 from planner.planner import SKILL_REGISTRY, EVENT_TO_SKILL, Planner
-from detector import EventDetector, get_detector
 from map_zones import get_active_zone, get_enemy_zones
 
 load_dotenv()
@@ -217,15 +216,15 @@ async def collector_ws(websocket: WebSocket):
     # 队列消费回调：事件 → LangGraph → 发送 tip
     async def handle_coaching(item: dict):
         nonlocal latest_state
-
-        event = item["event"]
+        event: CoachEvent = item["event"]
+        snapshot: GameState | None = item.get("_snapshot") or latest_state
         signals = item.get("signals", [])
         priority = item.get("priority", 1)
 
         # 构建初始状态，注入 LangGraph
         initial: CoachState = {
             "event": event.model_dump(),
-            "game_state": latest_state.model_dump() if latest_state else None,
+            "game_state": snapshot.model_dump() if snapshot else None,
             "session_id": "default",
             "event_name": "",
             "event_data": {},
@@ -297,6 +296,7 @@ async def collector_ws(websocket: WebSocket):
 
             if msg.type == "state":
                 latest_state = GameState.model_validate(msg.payload)
+                latest_state.sync_active_player()  # copy items from all_players → active_player
                 redis_store.save_state("default", msg.payload)
 
                 # ★ 反馈闭环：检查上次建议是否被采纳
@@ -330,31 +330,6 @@ async def collector_ws(websocket: WebSocket):
                 memory.user.context["enemy_zones"] = enemy_zones
                 logger.debug("Player zone: %s | Enemies visible: %d", zone, len(enemy_zones))
 
-                # ★ Python Detector: 在 Agent 内检测 Go Collector 未覆盖的高级事件
-                py_events = get_detector().detect(msg.payload)
-                for py_evt in py_events:
-                    evt_name = py_evt["name"]
-                    evt_data = py_evt.get("data", {})
-                    event = CoachEvent(name=evt_name, data=evt_data)
-
-                    # 死亡时跳过非龙/大龙事件
-                    if latest_state:
-                        hp_pct = latest_state.active_player_health_pct()
-                        if hp_pct == 0 and evt_name not in ("dragon_soon", "baron_soon"):
-                            continue
-
-                    if _is_urgent(event):
-                        logger.info("URGENT (detector): %s", evt_name)
-                        asyncio.create_task(handle_coaching({
-                            "event": event, "signals": [], "priority": 3,
-                        }))
-                    else:
-                        skill_name = EVENT_TO_SKILL.get(evt_name, "")
-                        meta = SKILL_REGISTRY.get(skill_name, {})
-                        prio = meta.get("priority", 1)
-                        await queue.enqueue({
-                            "event": event, "signals": [], "priority": prio,
-                        })
                 continue
 
             if msg.type == "event":
@@ -365,13 +340,16 @@ async def collector_ws(websocket: WebSocket):
                     if hp_pct == 0 and event.name not in ("dragon_soon", "baron_soon"):
                         continue
 
-                # ★ 紧急事件：绕过队列，立即处理
+                # 紧急事件：绕过队列，立即处理
                 if _is_urgent(event):
                     logger.info("URGENT event: %s — bypassing queue", event.name)
+                    # Capture current state snapshot to avoid race with main loop updates.
+                    snapshot = latest_state
                     asyncio.create_task(handle_coaching({
                         "event": event,
                         "signals": [],
                         "priority": 3,
+                        "_snapshot": snapshot,
                     }))
                     continue
 

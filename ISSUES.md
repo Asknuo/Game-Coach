@@ -105,11 +105,201 @@
   `app.py` 在 publish 后记录建议，state 到达时检查反馈
 - **日期**: 2026-06-19
 
+### #14 击杀后无反馈 (功能缺失)
+- **文件**: `agent/skills/macro/SKILL.md`, `agent/planner/planner.py`, `agent/graph/nodes.py`
+- **问题**: `kill` 事件能被检测但无对应 Skill，击杀后无任何反馈 — 这是最关键的反馈窗口
+- **修复**: `macro` Skill 新增 `kill` 和 `gold_spike` 事件，加入完整的"击杀后行动决策表"（按游戏时间和位置给出不同建议：推线镀层 / 打龙 / 推塔 / 回城）。`planner.py` 加 kill 基础消息。`nodes.py` RAG 拼接 "after getting kill capitalize advantage" 查询
+- **日期**: 2026-06-19
+
+### #15 坐标无区域语义 (功能缺失)
+- **文件**: `agent/map_zones.py` (新建), `agent/app.py`, `agent/memory/injector.py`
+- **问题**: 只有 `(8954, 5321)` 原始坐标，LLM 不知道玩家在"上路河道"还是"中路一塔"
+- **修复**: 创建 `map_zones.py` 区域解析器，将坐标映射到 20 个语义区域（泉水/基地/龙坑/大龙坑/河道/野区/中路等），区分蓝队/红队视角。`app.py` state handler 自动计算玩家区域和敌方可见区域。`injector.py` 记忆注入中附带区域和敌方位置信息
+- **日期**: 2026-06-19
+
 ---
 
-## 四、待处理问题
+## 四、Bug 审查修复 (2026-06-20) — Go + Python 全量审查
 
-> 当前无待处理问题。所有已知问题均已修复。
+> 对 Go Collector + Python Agent 进行全面交叉审查，共发现 28 个问题，全部修复。
+
+### 第一批：致命/数据丢失 (12 个, #16-#27)
+
+### #16 致命: ActivePlayer 缺 items 字段 → 运行时崩溃
+- **文件**: `agent/models/state.py`, `agent/app.py:284`
+- **问题**: `ActivePlayer` 模型无 `items` 字段，但 `app.py` 直接访问 `latest_state.active_player.items`，触发 `AttributeError` 崩溃
+- **修复**: `ActivePlayer` 添加 `items: list[Item]` 字段；同时新增 `GameState.sync_active_player()` 方法从 `all_players` 中匹配活跃玩家并复制 items
+- **日期**: 2026-06-20
+
+### #17 致命: UserContext 缺 context 字段 → 运行时崩溃
+- **文件**: `agent/memory/models.py`, `agent/app.py:328-329`
+- **问题**: `UserContext` 模型无 `context` 字段，但 `app.py` 每帧 state 更新时写入导致 `AttributeError`
+- **修复**: `UserContext` 添加 `context: dict[str, Any]` 字段
+- **日期**: 2026-06-20
+
+### #18 Python Player 模型缺少 6 个字段 → 数据静默丢弃
+- **文件**: `agent/models/state.py`
+- **问题**: Go Collector 发送的 champion_name/kills/deaths/assists/current_gold/creep_score 被 Pydantic 静默丢弃
+- **修复**: `Player` 模型补齐全部 6 个字段
+- **日期**: 2026-06-20
+
+### #19 Python GameEvent 缺 dragon_type → 龙种信息丢失
+- **文件**: `agent/models/state.py`
+- **问题**: Go Collector 的 dragon_type 未被解析
+- **修复**: `GameEvent` 添加 `dragon_type: str = ""`
+- **日期**: 2026-06-20
+
+### #20 detect_signals 死亡过滤键名错误 → 死亡玩家仍收到事件
+- **文件**: `agent/graph/nodes.py:71`
+- **问题**: 读血量用 `current_health` 但 model_dump key 是 `health`，hp 永远取默认值 1
+- **修复**: 改为 `active.get("health", 1)`
+- **日期**: 2026-06-20
+
+### #21 Engine 冷却去重丢弃同一 tick 内同类型事件
+- **文件**: `collector/internal/event/engine.go`
+- **问题**: 单遍循环中第一个事件过冷却后立即设置时间戳，第二个同名事件被 0ms 冷却拦截
+- **修复**: 重写为两遍处理 (Pass 1 收集 → Pass 2 写冷却)
+- **日期**: 2026-06-20
+
+### #22 death 事件被 60s 冷却 → 连续死亡丢失
+- **文件**: `collector/internal/event/engine.go`
+- **问题**: death 配了 60s 冷却，60s 内连续阵亡只触发第一次
+- **修复**: 从 cooldownDurations 中移除 death
+- **日期**: 2026-06-20
+
+### #23 重置后首次 tick 产生虚假事件
+- **文件**: `collector/internal/event/detector.go`
+- **问题**: 重置后快照全为 nil，已有道具/击杀被识别为"新增"
+- **修复**: 新增 initialized 标志 + firstTickInit() 仅记录快照
+- **日期**: 2026-06-20
+
+### #24 publish 装备过期校验永远被跳过
+- **文件**: `agent/models/state.py`, `agent/app.py`
+- **问题**: 装备过期检查依赖 active_player.items 但 Go 不发送此字段
+- **修复**: 在 app.py 接收 state 后调用 sync_active_player() 补全 items
+- **日期**: 2026-06-20
+
+### #25 WebSocket heartbeat 与 send 并发写竞态
+- **文件**: `collector/internal/sender/websocket.go`
+- **问题**: heartbeat 直接调 conn.WriteMessage，send 在锁内写，两个 goroutine 并发写同一连接
+- **修复**: 拆分为 writeMu (WriteMessage) + readMu (SetReadDeadline)，所有写路径统一加锁
+- **日期**: 2026-06-20
+
+### #26 FetchGameState 失败导致 detector 状态跳跃
+- **文件**: `collector/cmd/main.go`, `collector/internal/event/engine.go`
+- **问题**: 失败时 continue，下次成功时 lastState 滞后多 tick，周期检测误判
+- **修复**: 失败时调用 engine.Reset() 重置检测器状态
+- **日期**: 2026-06-20
+
+### #27 敌方高经济玩家无特殊检测
+- **文件**: `collector/internal/lol/parser.go`, `collector/internal/event/detector.go`, `agent/planner/planner.py`, `agent/graph/nodes.py`
+- **问题**: 缺失敌方经济追踪
+- **修复**: Go Player 补齐 CurrentGold/Assists/CreepScore；新增 enemy_gold_lead 和 enemy_fed 事件
+- **日期**: 2026-06-20
+
+---
+
+### 第二批：低优全面修复 (16 个, #28-#43)
+
+### Go Collector 侧 (7 个)
+
+### #28 WebSocket SetReadDeadline 并发调用 (心跳 vs pong handler)
+- **文件**: `collector/internal/sender/websocket.go`
+- **问题**: heartbeat 和 pong handler 并发调用 conn.SetReadDeadline，违反 gorilla/websocket 并发约束
+- **修复**: 拆分 writeMu / readMu，readMu 保护所有 SetReadDeadline 调用
+- **日期**: 2026-06-20
+
+### #29 detectGoldSpike 金币归零后永久失效
+- **文件**: `collector/internal/event/detector.go:281`
+- **问题**: `d.lastGold > 0` 守卫导致 gold 归零后 lastGold 不更新，gold_spike 永久失效
+- **修复**: 移除 lastGold > 0 守卫；始终在函数末尾 `d.lastGold = gold`
+- **日期**: 2026-06-20
+
+### #30 client.available 无锁读写 → 数据竞争
+- **文件**: `collector/internal/lol/client.go`
+- **问题**: `bool` 字段被多 goroutine 读写 (RefreshCredentials + get)
+- **修复**: `bool` → `atomic.Bool`，统一用 .Load() / .Store()
+- **日期**: 2026-06-20
+
+### #31 FetchGameState 忽略传入 context
+- **文件**: `collector/internal/lol/client.go:96`
+- **问题**: `_ = ctx` 丢弃 context，关闭时 HTTP 请求无法取消
+- **修复**: 传递 ctx 到 get()，用 http.NewRequestWithContext
+- **日期**: 2026-06-20
+
+### #32 POLL_INTERVAL 解析失败静默忽略
+- **文件**: `collector/cmd/main.go:29`
+- **问题**: `ParseDuration` 失败无日志，配置错误难排查
+- **修复**: else 分支加 WARNING 日志
+- **日期**: 2026-06-20
+
+### #33 Enrich 中 DragonTimer/BaronTimer 可能残留旧值
+- **文件**: `collector/internal/lol/objectives.go:38`
+- **问题**: 重用时未置 nil，不满足条件时返回上一次的值
+- **修复**: Enrich 入口直接 `state.DragonTimer = nil; state.BaronTimer = nil`
+- **日期**: 2026-06-20
+
+### #34 Connect 持锁期间网络 I/O (阻塞可达 5s)
+- **文件**: `collector/internal/sender/websocket.go:76`
+- **问题**: writeMu 锁覆盖 dialer.DialContext()，持锁期间阻塞所有 send 操作
+- **修复**: 锁降级 — 仅在检查/设置 conn 时加锁，拨号在锁外执行
+- **日期**: 2026-06-20
+
+### Python Agent 侧 (9 个)
+
+### #35 紧急 task 竞态 — 可能读到未来帧的 game_state
+- **文件**: `agent/app.py:344`
+- **问题**: `create_task(handle_coaching(...))` 闭包捕获 `nonlocal latest_state`，task 执行时 latest_state 可能已更新为新帧
+- **修复**: 创建 task 前 `snapshot = latest_state` + 传递 `_snapshot` 到协调函数
+- **日期**: 2026-06-20
+
+### #36 泉水坐标缺 is_position_valid 校验
+- **文件**: `agent/graph/nodes.py:86`
+- **问题**: 坐标 (0,0) 被当作泉水，坐标无效时错误抑制 low_health 事件
+- **修复**: 加 is_position_valid() 检查，无效坐标跳过泉水距离判定
+- **日期**: 2026-06-20
+
+### #37 kill_count_before 永远为 0 → low_health 事件误抑制
+- **文件**: `agent/graph/nodes.py:92`
+- **问题**: `gs.get("kill_count_before", 0)` 始终为 0，导致有击杀的玩家 low_health 永远被跳过
+- **修复**: 移除该抑制逻辑（kill 事件由独立 handler 处理）
+- **日期**: 2026-06-20
+
+### #38 detect_signals 信号分类缺失 10 种事件
+- **文件**: `agent/graph/nodes.py`
+- **问题**: kill/death/enemy_fed/enemy_gold_lead/teamfight_detected 等事件无信号分类
+- **修复**: 新增 10 个 elif 分支：item_upgraded/gold_spike → power_spike，kill → kill_secured，death → player_died，enemy_fed → danger+enemy_fed，enemy_gold_lead → enemy_power_spike+danger 等
+- **日期**: 2026-06-20
+
+### #39 Python ActivePlayer 缺 team 字段
+- **文件**: `agent/models/state.py`
+- **问题**: map_zones.py 每帧 fallback 到 all_players 中查找 team
+- **修复**: ActivePlayer 添加 `team: str = ""`
+- **日期**: 2026-06-20
+
+### #40 Go ActivePlayer 缺 items 字段 (Go 侧残留)
+- **文件**: `collector/internal/lol/parser.go`
+- **问题**: Go ActivePlayer 结构体未解析装备，Python 靠 sync_active_player 补齐
+- **修复**: ActivePlayer 加 Items []Item + 解析逻辑，消除 Python workaround 依赖
+- **日期**: 2026-06-20
+
+### #41 companion.py 线程传参修改私有属性
+- **文件**: `agent/companion.py:539`
+- **问题**: `ws_thread._target = _start_ws; ws_thread._args = (pet,)` 修改 Thread 私有属性
+- **修复**: `threading.Thread(target=lambda: _start_ws(pet), daemon=True)`
+- **日期**: 2026-06-20
+
+### #42 bridge.py game_start 事件 payload 格式不规范
+- **文件**: `agent/collector/bridge.py:103`
+- **问题**: payload 原样透传 LCU 数据，Agent 侧无固定格式可解析
+- **修复**: 规范化 payload 含 summoner_name/champion_name/assigned_position；game_end 补充发送事件含 duration
+- **日期**: 2026-06-20
+
+### #43 live_client.py dragon_timer/baron_timer 未填充
+- **文件**: `agent/collector/live_client.py:465`
+- **问题**: _build_game_state 未导出龙/大龙倒计时字段
+- **修复**: LiveGameData 加 dragon_timer/baron_timer Optional 字段；_build_game_state 导出
+- **日期**: 2026-06-20
 
 ---
 
@@ -119,7 +309,11 @@
 游戏客户端 → Live Client API (127.0.0.1:2999)
      │
      ▼
-Go Collector (1s 轮询，事件检测)
+Go Collector (1s 轮询，全部事件检测)
+     │  15 种事件: death/kill/item_purchased/item_sold/item_upgraded/
+     │  gold_spike/dragon_soon/baron_soon/low_health/
+     │  enemy_item_purchased/enemy_item_sold/enemy_gold_lead/enemy_fed/
+     │  jungle_check/strategy_check
      │
      │  心跳: 30s 无事件 → 轻量 state
      │  有事件 → state + event 一起发
@@ -127,14 +321,11 @@ Go Collector (1s 轮询，事件检测)
      ▼
 WebSocket → Python Agent
      │
-     ├── EventDetector: 检测 Go 未覆盖的高级事件
-     │   (death/kill/enemy_item/item_sold/item_upgraded/gold_spike)
-     │
      ├── MapZones: 坐标 → 区域语义
      │   "你在上路河道，对面劫在小龙坑"
      │
-     ├── 紧急事件 (low_health/death/dragon_soon):
-     │     绕过队列 → 直接进 LangGraph 流水线
+     ├── 紧急事件 (low_health/death/dragon_soon/baron_soon/enemy_fed):
+     │     绕过队列 → 直接进 LangGraph 流水线 (带 _snapshot 快照)
      │
      ├── 非紧急事件:
      │     入队 → 15s 窗口 → 按优先级排序 → 流水线
@@ -158,26 +349,36 @@ LangGraph 8节点流水线:
 
 ---
 
-## 六、修改文件清单
+## 七、修改文件清单
 
 | 文件 | 涉及问题 | 改动性质 |
 |------|---------|---------|
-| `agent/collector/live_client.py` | #1 #2 #7 #8 | 事件检测、心跳机制、装备增强 |
-| `agent/app.py` | #4 #10 #12 #13 #15 | 紧急事件绕过队列、Detector 集成、知识库刷新、反馈闭环、区域映射 |
-| `agent/detector.py` | #10 | **新建**：独立事件检测模块 |
+| `agent/collector/live_client.py` | #1 #2 #7 #8 #43 | 事件检测、心跳、装备增强、dragon/baron 字段补齐 |
+| `agent/collector/bridge.py` | #42 | game_start 格式规范化、game_end 事件发送 |
+| `agent/app.py` | #4 #10 #12 #13 #15 #16 #24 #35 | 紧急事件绕过队列、Detector 集成、知识库刷新、反馈闭环、区域映射、同步快照防竞态 |
+| `agent/detector.py` | #10 | **新建后删除**：独立事件检测模块（全部迁移到 Go） |
 | `agent/map_zones.py` | #15 | **新建**：坐标→区域语义解析 |
-| `agent/graph/nodes.py` | #5 #6 #9 #14 | 坐标校验、上下文抑制、时效性检查、kill RAG |
-| `agent/models/state.py` | #5 | 坐标工具函数 |
+| `agent/graph/nodes.py` | #5 #6 #9 #14 #20 #36 #37 #38 | 坐标/泉水校验、上下文抑制、时效性、kill RAG、health 键名、信号分类补齐 10 种事件 |
+| `agent/models/state.py` | #5 #16 #18 #19 #24 #39 | 坐标工具函数、模型字段补齐（Player 6 字段 + ActivePlayer team/items + GameEvent dragon_type）+ sync_active_player |
+| `agent/memory/models.py` | #17 | UserContext 添加 context 字段 |
 | `agent/memory/queue.py` | #4 | 紧急事件防御过滤 |
 | `agent/memory/redis_store.py` | #13 | 反馈闭环追踪 |
 | `agent/memory/injector.py` | #15 | 区域信息注入 |
-| `agent/companion.py` | #11 | Edge TTS 三级链路 |
+| `agent/companion.py` | #11 #41 | Edge TTS 三级链路、线程传参 lambda 闭包 |
 | `agent/knowledge/chroma_store.py` | #12 | 知识库新鲜度检查 |
 | `agent/knowledge/ingest.py` | #3 #12 | 兼容新旧格式、摄入时间戳 |
 | `agent/knowledge/data_fetcher.py` | #3 | items 保存格式 |
 | `agent/knowledge/item_resolver.py` | #3 | **新建**：物品名称解析 |
-| `agent/planner/planner.py` | #2 #8 #14 | 新事件消息生成 |
+| `agent/planner/planner.py` | #2 #8 #14 #27 | 新事件消息生成 |
 | `agent/knowledge/retriever.py` | #8 | 装备事件扩列 |
 | `agent/skills/build/SKILL.md` | #2 #8 | 敌方装备检测 |
 | `agent/skills/macro/SKILL.md` | #14 | 击杀后决策表 |
 | `agent/skills/build/gotchas.md` | #2 | 敌方装备坑点 |
+| `collector/cmd/main.go` | #26 #32 | 失败时重置 engine、POLL_INTERVAL 警告日志 |
+| `collector/internal/lol/parser.go` | #27 #40 | Player 结构体扩展字段、ActivePlayer 补齐 items 解析 |
+| `collector/internal/lol/state.go` | #10 | ActivePlayerFromAll 辅助方法 |
+| `collector/internal/lol/client.go` | #30 #31 | available → atomic.Bool、FetchGameState 传递 context |
+| `collector/internal/lol/objectives.go` | #33 | Enrich 入口置 nil 防止旧值残留 |
+| `collector/internal/event/detector.go` | #10 #23 #27 #29 | 事件检测统一、firstTickInit、敌方经济追踪、goldSpike 永久失效 |
+| `collector/internal/event/engine.go` | #21 #22 #26 | 两遍冷却去重、death 冷却移除、Reset 方法 |
+| `collector/internal/sender/websocket.go` | #25 #28 #34 | writeMu/readMu 拆分、SetReadDeadline 并发保护、Connect 锁降级 |

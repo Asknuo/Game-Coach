@@ -13,25 +13,22 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// ── 常量 ────────────────────────────────────────────
-
 const (
-	bufferCapacity = 200                  // HA #3: 环形缓冲区容量
-	pingInterval   = 30 * time.Second     // HA #4: 心跳间隔
-	pingTimeout    = 10 * time.Second     // HA #4: 等待 pong 的超时
+	bufferCapacity = 200
+	pingInterval   = 30 * time.Second
+	pingTimeout    = 10 * time.Second
 )
 
 type bufferedMsg struct {
 	bytes   []byte
-	stampMs int64 // UnixMilli，用于过滤过期消息
+	stampMs int64
 }
 
-// ringBuffer 固定大小环形缓冲区，线程安全.
 type ringBuffer struct {
 	mu    sync.Mutex
 	ring  [bufferCapacity]bufferedMsg
-	head  int // 写入位置
-	count int // 当前已用条目数
+	head  int
+	count int
 }
 
 func (b *ringBuffer) push(data []byte) {
@@ -44,7 +41,6 @@ func (b *ringBuffer) push(data []byte) {
 	}
 }
 
-// drainSince 返回时间戳 >= cutoffMs 的所有消息（按时间顺序），并清空缓冲区.
 func (b *ringBuffer) drainSince(cutoffMs int64) [][]byte {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -55,18 +51,18 @@ func (b *ringBuffer) drainSince(cutoffMs int64) [][]byte {
 			result = append(result, b.ring[idx].bytes)
 		}
 	}
-	// 清空
 	*b = ringBuffer{}
 	return result
 }
 
-// ── WebSocket ────────────────────────────────────────
-
+// WebSocket wraps a gorilla connection with reconnect, buffering, and heartbeat.
+// writeMu protects all conn.WriteMessage calls; readMu protects SetReadDeadline.
 type WebSocket struct {
-	url    string
-	conn   *websocket.Conn
-	mu     sync.Mutex
-	buffer *ringBuffer // ★ HA #3: 断连时缓冲消息
+	url     string
+	conn    *websocket.Conn
+	writeMu sync.Mutex // protects conn.WriteMessage
+	readMu  sync.Mutex // protects conn.SetReadDeadline
+	buffer  *ringBuffer
 }
 
 func NewWebSocket(url string) *WebSocket {
@@ -74,12 +70,13 @@ func NewWebSocket(url string) *WebSocket {
 }
 
 func (w *WebSocket) Connect(ctx context.Context) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
+	// Quick check under writeMu — avoid double-dial without blocking I/O.
+	w.writeMu.Lock()
 	if w.conn != nil {
+		w.writeMu.Unlock()
 		return nil
 	}
+	w.writeMu.Unlock()
 
 	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
 	conn, _, err := dialer.DialContext(ctx, w.url, nil)
@@ -87,18 +84,24 @@ func (w *WebSocket) Connect(ctx context.Context) error {
 		return fmt.Errorf("dial %s: %w", w.url, err)
 	}
 
+	w.writeMu.Lock()
 	w.conn = conn
+	w.writeMu.Unlock()
+
 	go w.readLoop(conn)
-	go w.heartbeat(conn) // ★ HA #4: 30s 心跳协程
+	go w.heartbeat(conn)
 	log.Printf("connected to agent at %s", w.url)
 
-	// ★ HA #3: 重连后重放最近 60 秒的缓冲事件
+	// Replay buffered events from the last 60s.
 	cutoff := time.Now().Add(-60 * time.Second).UnixMilli()
 	replay := w.buffer.drainSince(cutoff)
 	if len(replay) > 0 {
 		log.Printf("replaying %d buffered events (last 60s)", len(replay))
 		for _, data := range replay {
-			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			w.writeMu.Lock()
+			err := conn.WriteMessage(websocket.TextMessage, data)
+			w.writeMu.Unlock()
+			if err != nil {
 				log.Printf("replay write failed: %v (stopping replay)", err)
 				break
 			}
@@ -109,11 +112,18 @@ func (w *WebSocket) Connect(ctx context.Context) error {
 }
 
 func (w *WebSocket) readLoop(conn *websocket.Conn) {
-	// ★ HA #4: 设置 pong 处理器，每次收到 pong 刷新读超时
+	// Initial read deadline; heartbeat+pong handler will keep it refreshed.
+	w.readMu.Lock()
+	conn.SetReadDeadline(time.Now().Add(pingInterval + pingTimeout))
+	w.readMu.Unlock()
+
 	conn.SetPongHandler(func(string) error {
+		w.readMu.Lock()
 		conn.SetReadDeadline(time.Now().Add(pingInterval + pingTimeout))
+		w.readMu.Unlock()
 		return nil
 	})
+
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -139,24 +149,28 @@ func (w *WebSocket) readLoop(conn *websocket.Conn) {
 	}
 }
 
-// ★ HA #4: 心跳协程 — 每 30s 发 ping，pong 超时关闭连接
 func (w *WebSocket) heartbeat(conn *websocket.Conn) {
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 
 	for {
+		w.readMu.Lock()
 		conn.SetReadDeadline(time.Now().Add(pingInterval + pingTimeout))
+		w.readMu.Unlock()
+
+		w.writeMu.Lock()
 		err := conn.WriteMessage(websocket.PingMessage, nil)
+		w.writeMu.Unlock()
 		if err != nil {
-			return // 连接已断，协程退出
+			return
 		}
 		<-ticker.C
 	}
 }
 
 func (w *WebSocket) Close() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.writeMu.Lock()
+	defer w.writeMu.Unlock()
 	if w.conn != nil {
 		_ = w.conn.Close()
 		w.conn = nil
@@ -172,18 +186,16 @@ func (w *WebSocket) send(msgType string, payload interface{}) error {
 		return err
 	}
 
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.writeMu.Lock()
+	defer w.writeMu.Unlock()
 
 	if w.conn == nil {
-		// ★ HA #3: 未连接时缓冲消息
 		w.buffer.push(body)
 		return fmt.Errorf("not connected (buffered)")
 	}
 
 	err = w.conn.WriteMessage(websocket.TextMessage, body)
 	if err != nil {
-		// ★ HA #3: 发送失败也缓冲（下次重连回放）
 		w.buffer.push(body)
 	}
 	return err

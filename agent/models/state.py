@@ -18,17 +18,25 @@ class Item(BaseModel):
 
 class ActivePlayer(BaseModel):
     summoner_name: str = ""
+    team: str = ""
     level: int = 0
     current_gold: float = 0
     health: float = 0
     max_health: float = 0
     position: Vec2 = Field(default_factory=Vec2)
+    items: list[Item] = Field(default_factory=list)
 
 
 class Player(BaseModel):
     summoner_name: str = ""
     team: str = ""
+    champion_name: str = ""
     level: int = 0
+    kills: int = 0
+    deaths: int = 0
+    assists: int = 0
+    current_gold: float = 0.0
+    creep_score: int = 0
     health: float = 0
     max_health: float = 0
     position: Vec2 = Field(default_factory=Vec2)
@@ -39,6 +47,7 @@ class GameEvent(BaseModel):
     event_id: int = 0
     event_name: str = ""
     event_time: float = 0
+    dragon_type: str = ""
 
 
 class DragonInfo(BaseModel):
@@ -65,6 +74,14 @@ class GameState(BaseModel):
         if self.active_player.max_health <= 0:
             return 100.0
         return self.active_player.health / self.active_player.max_health * 100
+
+    def sync_active_player(self) -> None:
+        """Populate ActivePlayer items from AllPlayers (Go collector sends them
+        separately). Fixes publish stale-item check and advice context tracking."""
+        for p in self.all_players:
+            if p.summoner_name == self.active_player.summoner_name:
+                self.active_player.items = p.items
+                return
 
 
 class CoachEvent(BaseModel):

@@ -39,3 +39,14 @@ func (s *GameState) ItemCount(player Player) int {
 	}
 	return count
 }
+
+// ActivePlayerFromAll returns the active player's entry from AllPlayers.
+// Returns nil if not found (e.g. not in game).
+func (s *GameState) ActivePlayerFromAll() *Player {
+	for i := range s.AllPlayers {
+		if s.AllPlayers[i].SummonerName == s.ActivePlayer.SummonerName {
+			return &s.AllPlayers[i]
+		}
+	}
+	return nil
+}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,7 +23,7 @@ type Client struct {
 	port         string
 	password     string
 	httpClient   *http.Client
-	available    bool
+	available    atomic.Bool
 	objectives   *ObjectiveTracker
 }
 
@@ -40,31 +41,31 @@ func NewClient(lockfilePath string) *Client {
 }
 
 func (c *Client) IsAvailable() bool {
-	return c.available
+	return c.available.Load()
 }
 
 func (c *Client) RefreshCredentials() error {
 	path, err := c.resolveLockfile()
 	if err != nil {
-		c.available = false
+		c.available.Store(false)
 		return err
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		c.available = false
+		c.available.Store(false)
 		return fmt.Errorf("read lockfile: %w", err)
 	}
 
 	parts := strings.Split(strings.TrimSpace(string(data)), ":")
 	if len(parts) < 5 {
-		c.available = false
+		c.available.Store(false)
 		return fmt.Errorf("invalid lockfile format")
 	}
 
 	c.port = parts[2]
 	c.password = parts[3]
-	c.available = true
+	c.available.Store(true)
 	return nil
 }
 
@@ -97,8 +98,7 @@ func (c *Client) resolveLockfile() (string, error) {
 }
 
 func (c *Client) FetchGameState(ctx context.Context) (*GameState, error) {
-	_ = ctx
-	raw, err := c.get("/liveclientdata/allgamedata")
+	raw, err := c.get(ctx, "/liveclientdata/allgamedata")
 	if err != nil {
 		return nil, err
 	}
@@ -111,13 +111,13 @@ func (c *Client) FetchGameState(ctx context.Context) (*GameState, error) {
 	return state, nil
 }
 
-func (c *Client) get(path string) ([]byte, error) {
-	if !c.available {
+func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
+	if !c.available.Load() {
 		return nil, fmt.Errorf("client not available")
 	}
 
 	url := fmt.Sprintf("%s:%s%s", liveClientBase, c.port, path)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +127,7 @@ func (c *Client) get(path string) ([]byte, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.available = false
+		c.available.Store(false)
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -144,7 +144,7 @@ func (c *Client) get(path string) ([]byte, error) {
 }
 
 func (c *Client) FetchRaw(path string) (json.RawMessage, error) {
-	data, err := c.get(path)
+	data, err := c.get(context.Background(), path)
 	if err != nil {
 		return nil, err
 	}

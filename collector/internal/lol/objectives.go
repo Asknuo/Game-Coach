@@ -36,6 +36,10 @@ func (t *ObjectiveTracker) Reset() {
 
 // Enrich fills DragonTimer and BaronTimer on state from tracked kill events.
 func (t *ObjectiveTracker) Enrich(state *GameState) {
+	// Reset timers to avoid stale values from previous state reuse.
+	state.DragonTimer = nil
+	state.BaronTimer = nil
+
 	if state == nil || state.GameTime <= 0 {
 		t.Reset()
 		return

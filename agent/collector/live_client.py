@@ -61,6 +61,8 @@ class LiveGameData:
     active_player: Optional[LivePlayer] = None
     all_players: list[LivePlayer] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
+    dragon_timer: Optional[dict] = None  # populated by ObjectiveTracker equivalent
+    baron_timer: Optional[dict] = None
 
     @property
     def active_team(self) -> str:
@@ -491,4 +493,6 @@ class LiveClientCollector:
                 for p in game.all_players
             ],
             "events": game.events,
+            "dragon_timer": game.dragon_timer,
+            "baron_timer": game.baron_timer,
         }

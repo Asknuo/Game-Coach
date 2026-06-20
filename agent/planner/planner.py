@@ -143,6 +143,22 @@ class Planner:
             item_count = data.get("total_items", 0)
             return f"Enemy {enemy_champ} bought item(s) (total: {item_count}) — check their build and counter."
 
+        elif name == "enemy_item_sold":
+            enemy_name = data.get("enemy_name", "enemy")
+            return f"Enemy {enemy_name} sold item(s) — possible item slot swap or build pivot."
+
+        elif name == "enemy_gold_lead":
+            enemy_champ = data.get("enemy_champion", "enemy")
+            gap = data.get("gold_gap", 0)
+            kills = data.get("enemy_kills", 0)
+            return f"Enemy {enemy_champ} has a {gap:.0f}g lead ({kills} kills) — avoid 1v1, play safe and coordinate ganks."
+
+        elif name == "enemy_fed":
+            enemy_champ = data.get("enemy_champion", "enemy")
+            kills = data.get("kills", 0)
+            milestone = data.get("milestone", 0)
+            return f"ENEMY FED: {enemy_champ} reached {kills} kills — high shutdown priority, group to shut them down."
+
         elif name == "gold_spike":
             return f"Gold spike ({data.get('delta', 0)}g) — consider your next purchase."
 
