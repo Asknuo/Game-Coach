@@ -23,6 +23,7 @@ class CoachEngine:
     def __init__(self, memory: PlayerMemory, injector: MemoryInjector):
         self.memory = memory
         self.injector = injector
+        self._on_game_saved: object = None  # 对局保存后回调
 
     # ── Coaching 生成 ──────────────────────────
 
@@ -125,9 +126,6 @@ class CoachEngine:
                     played_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 )
                 self.memory.history.recent_games.append(game)
-                # 保留最近 20 场
-                if len(self.memory.history.recent_games) > 20:
-                    self.memory.history.recent_games = self.memory.history.recent_games[-20:]
 
                 # 如果 LLM 检测到错误，生成 fact
                 if game.mistake:
@@ -142,11 +140,28 @@ class CoachEngine:
                     self.memory.facts.append(fact)
 
                 logger.info("game summarized: %s %s", game.champion, game.result)
+
+                # ★ 每局打完立即触发持久化
+                if self._on_game_saved:
+                    self._on_game_saved()
         except Exception:
             logger.exception("LLM summarization failed, using fallback")
             self._summarize_fallback(state_summary)
 
     def _summarize_fallback(self, summary: dict):
-        """无 LLM 时的简单统计摘要."""
-        # 不做复杂处理，保持 memory 可用
-        logger.info("game summary: %s", summary)
+        """无 LLM 时的简单统计摘要 — 也保存对局记录，不丢弃数据."""
+        game = RecentGame(
+            game_id=f"game_{int(time.time())}",
+            champion=summary.get("champion", "unknown"),
+            result="unknown",
+            kills=summary.get("kills", 0),
+            deaths=summary.get("deaths", 0),
+            assists=summary.get("assists", 0),
+            played_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+        self.memory.history.recent_games.append(game)
+        logger.info("game saved (no LLM): %s", game.champion)
+
+        # 同样触发持久化回调
+        if self._on_game_saved:
+            self._on_game_saved()

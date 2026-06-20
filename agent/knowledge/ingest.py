@@ -41,6 +41,8 @@ class Ingestor:
         self.ingest_runes()
         self.ingest_summoner_spells()
         self.ingest_game_info()
+        self.store.mark_ingested()
+        logger.info("Knowledge base ingestion complete — freshness stamp updated")
 
     # ---------- 装备 ----------
 
@@ -52,10 +54,16 @@ class Ingestor:
             return
 
         with open(items_path, "r", encoding="utf-8") as f:
-            items = json.load(f)
+            raw_items = json.load(f)
 
-        if not items:
+        if not raw_items:
             return
+
+        # 兼容两种格式：dict（新，key=itemID）或 list（旧）
+        if isinstance(raw_items, dict):
+            items = list(raw_items.values())
+        else:
+            items = raw_items
 
         # 过滤掉名称缺失的无效条目
         items = [i for i in items if i.get("name")]

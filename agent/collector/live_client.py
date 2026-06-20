@@ -24,7 +24,7 @@ from typing import Callable, Optional
 logger = logging.getLogger("collector.live_client")
 
 LIVE_CLIENT_URL = "https://127.0.0.1:2999"
-POLL_INTERVAL = 0.5  # 秒
+POLL_INTERVAL = 1.0  # 秒
 
 
 # ── 数据结构（对应 Live Client Data API 返回格式） ──
@@ -113,11 +113,14 @@ class LiveClientCollector:
         self._last_events: list[dict] = []
         self._last_hp: float = 100.0
         self._last_deaths: int = 0
-        self._last_items_count: int = 0
+        self._last_items_snapshot: dict = {}  # {"by_slot": {slot: itemID}, "ids": [itemID, ...]}
         self._last_gold: float = 0
         self._dragon_kills: dict[str, int] = {}  # team -> kills
         self._baron_kills: dict[str, int] = {}
         self._kills_snapshot: dict[str, int] = {}  # summoner_name -> kills
+        self._enemy_items_snapshot: dict[str, list[int]] = {}  # enemy_name -> [itemID, ...]
+        self._last_event_time: float = 0  # 上次发送事件的 epoch 时间
+        self._heartbeat_interval: float = 30.0  # 心跳间隔（秒）
 
     # ── 公开 API ──
 
@@ -153,6 +156,13 @@ class LiveClientCollector:
                         logger.info("Live Client Data API connected")
                     game = self._parse(data)
                     self._detect_events(game)
+
+                    # ★ 心跳机制：超过心跳间隔无事件，发送轻量 state
+                    if time.time() - self._last_event_time > self._heartbeat_interval:
+                        if self._last_event_time > 0:  # 首次连接不发心跳
+                            state = self._build_game_state(game)
+                            self._callback("state", state)
+                            self._last_event_time = time.time()
                 else:
                     if self._connected:
                         self._connected = False
@@ -171,26 +181,31 @@ class LiveClientCollector:
     # ── 事件检测 ──
 
     def _detect_events(self, game: LiveGameData):
-        """对比上次快照，检测新事件并回调。"""
+        """对比上次快照，检测新事件并回调（只在有事件时附带 state）。"""
         ap = game.active_player
         if not ap:
             return
 
-        # 1. 发送完整游戏状态（每次都有）
         state = self._build_game_state(game)
-        self._callback("state", state)
+        state_sent = False  # 只在首个事件前发送一次 state
+
+        def _emit(event_name: str, event_data: dict):
+            """仅在首次事件前附带 state，后续事件不重复发送."""
+            nonlocal state_sent
+            if not state_sent:
+                self._callback("state", state)
+                state_sent = True
+            self._callback("event", {"name": event_name, "data": event_data})
+            self._last_event_time = time.time()  # ★ 记录最后事件时间，用于心跳判定
 
         # 2. 低血量
         hp_pct = game.active_health_pct()
         if hp_pct < 30 and self._last_hp >= 30:
             enemy = game.get_enemy_laner()
-            self._callback("event", {
-                "name": "low_health",
-                "data": {
-                    "health_pct": round(hp_pct, 1),
-                    "enemy_name": enemy.summoner_name if enemy else "",
-                    "enemy_champion": enemy.champion_name if enemy else "",
-                },
+            _emit("low_health", {
+                "health_pct": round(hp_pct, 1),
+                "enemy_name": enemy.summoner_name if enemy else "",
+                "enemy_champion": enemy.champion_name if enemy else "",
             })
         self._last_hp = hp_pct
 
@@ -198,40 +213,71 @@ class LiveClientCollector:
         if ap.deaths > self._last_deaths:
             db = ap.deaths - self._last_deaths
             for _ in range(db):
-                self._callback("event", {
-                    "name": "death",
-                    "data": {
-                        "total_deaths": ap.deaths,
-                        "game_time": game.game_time,
-                    },
+                _emit("death", {
+                    "total_deaths": ap.deaths,
+                    "game_time": game.game_time,
                 })
         self._last_deaths = ap.deaths
 
-        # 4. 买装备
-        current_items = len([i for i in ap.items if i.get("itemID", 0) != 0])
-        if current_items > self._last_items_count:
-            # 找新增物品
-            new_items = ap.items[self._last_items_count : current_items]
-            for it in new_items:
-                self._callback("event", {
-                    "name": "item_purchased",
-                    "data": {
-                        "item_id": it.get("itemID", 0),
-                        "slot": it.get("slot", 0),
-                    },
+        # 4. 购买/合成/卖出装备 — 逐 slot 对比
+        current_items_by_slot: dict[int, int] = {}
+        current_item_ids: list[int] = []
+        for it in ap.items:
+            iid = it.get("itemID", 0)
+            slot = it.get("slot", 0)
+            if iid != 0:
+                current_items_by_slot[slot] = iid
+                current_item_ids.append(iid)
+
+        prev_items_by_slot = self._last_items_snapshot.get("by_slot", {})
+        prev_ids = set(self._last_items_snapshot.get("ids", []))
+
+        new_items = [iid for iid in current_item_ids if iid not in prev_ids]
+        removed_items = [iid for iid in prev_ids if iid not in current_item_ids]
+        upgraded_slots: dict[int, tuple[int, int]] = {}  # slot -> (old_id, new_id)
+
+        for slot, new_id in current_items_by_slot.items():
+            old_id = prev_items_by_slot.get(slot, 0)
+            if old_id != 0 and old_id != new_id and new_id != 0:
+                upgraded_slots[slot] = (old_id, new_id)
+
+        if new_items:
+            # 过滤掉只是在合成中替换了（已算作 upgrade）
+            pure_new = [iid for iid in new_items if iid not in [t[1] for t in upgraded_slots.values()]]
+            for iid in pure_new:
+                _emit("item_purchased", {
+                    "item_id": iid,
+                    "slot": _slot_for_item(current_items_by_slot, iid),
+                    "action": "purchased",
                 })
-        self._last_items_count = current_items
+
+        if removed_items:
+            # 过滤掉合成替换的旧散件（已算作 upgrade）
+            pure_removed = [iid for iid in removed_items if iid not in [t[0] for t in upgraded_slots.values()]]
+            for iid in pure_removed:
+                _emit("item_sold", {
+                    "item_id": iid,
+                    "action": "sold_or_consumed",
+                })
+
+        if upgraded_slots:
+            for slot, (old_id, new_id) in upgraded_slots.items():
+                _emit("item_upgraded", {
+                    "slot": slot,
+                    "old_item_id": old_id,
+                    "new_item_id": new_id,
+                    "action": "upgraded",
+                })
+
+        self._last_items_snapshot = {"by_slot": current_items_by_slot, "ids": current_item_ids}
 
         # 5. 金币变化（升级技能/大件后触发）
         if self._last_gold > 0:
             gold_delta = ap.current_gold - self._last_gold
             if gold_delta > 500:
-                self._callback("event", {
-                    "name": "gold_spike",
-                    "data": {
-                        "current_gold": ap.current_gold,
-                        "delta": round(gold_delta),
-                    },
+                _emit("gold_spike", {
+                    "current_gold": ap.current_gold,
+                    "delta": round(gold_delta),
                 })
         self._last_gold = ap.current_gold
 
@@ -242,22 +288,30 @@ class LiveClientCollector:
         for name, kills in current_kills.items():
             prev_kills = self._kills_snapshot.get(name, 0)
             if kills > prev_kills and name == ap.summoner_name:
-                self._callback("event", {
-                    "name": "kill",
-                    "data": {
-                        "killer": name,
-                        "total_kills": kills,
-                        "game_time": game.game_time,
-                    },
+                _emit("kill", {
+                    "killer": name,
+                    "total_kills": kills,
+                    "game_time": game.game_time,
                 })
         self._kills_snapshot = current_kills
 
         # 7. 龙 / 大龙 — 从 events 里解析
-        self._detect_objectives(game)
+        self._detect_objectives(game, _emit)
+
+        # 8. 敌人装备变化 — 对比所有敌方玩家
+        self._detect_enemy_items(game, _emit)
 
         self._last_game_data = game
 
-    def _detect_objectives(self, game: LiveGameData):
+    @staticmethod
+    def _slot_for_item(items_by_slot: dict[int, int], item_id: int) -> int:
+        """根据 itemID 查找所在 slot."""
+        for slot, iid in items_by_slot.items():
+            if iid == item_id:
+                return slot
+        return 0
+
+    def _detect_objectives(self, game: LiveGameData, _emit):
         """检测龙/大龙击杀事件。"""
         events = game.events
         for evt in events:
@@ -267,24 +321,52 @@ class LiveClientCollector:
                 self._dragon_kills[team] = self._dragon_kills.get(team, 0) + 1
                 # 计算下一条龙刷新时间 (5 分钟)
                 respawn = evt.get("EventTime", game.game_time) + 300
-                self._callback("event", {
-                    "name": "dragon_soon",
-                    "data": {
-                        "dragon_type": evt.get("DragonType", "unknown"),
-                        "killer_team": team,
-                        "respawn_time": respawn,
-                        "stolen": evt.get("Stolen", False),
-                    },
+                _emit("dragon_soon", {
+                    "dragon_type": evt.get("DragonType", "unknown"),
+                    "killer_team": team,
+                    "respawn_time": respawn,
+                    "stolen": evt.get("Stolen", False),
                 })
             elif evt_name == "BaronKill":
                 team = self._baron_team(evt, game)
-                self._callback("event", {
-                    "name": "baron_soon",
-                    "data": {
-                        "killer_team": team,
-                        "respawn_time": evt.get("EventTime", game.game_time) + 420,
-                    },
+                _emit("baron_soon", {
+                    "killer_team": team,
+                    "respawn_time": evt.get("EventTime", game.game_time) + 420,
                 })
+
+    def _detect_enemy_items(self, game: LiveGameData, _emit):
+        """检测敌方所有英雄的装备变化."""
+        ap = game.active_player
+        if not ap:
+            return
+
+        active_team = game.active_team
+        if not active_team:
+            return
+
+        for p in game.all_players:
+            if p.team == active_team or p.team == "":
+                continue  # 跳过自己和无效队伍的
+
+            # 当前装备列表（只取有效 itemID）
+            current_items = sorted([
+                it.get("itemID", 0) for it in p.items if it.get("itemID", 0) != 0
+            ])
+            prev_items = sorted(self._enemy_items_snapshot.get(p.summoner_name, []))
+
+            # 找出新增的装备
+            new_items = [iid for iid in current_items if iid not in prev_items]
+            if new_items:
+                _emit("enemy_item_purchased", {
+                    "enemy_name": p.summoner_name,
+                    "enemy_champion": p.champion_name,
+                    "item_ids": new_items,
+                    "total_items": len(current_items),
+                    "game_time": game.game_time,
+                })
+
+            # 更新快照
+            self._enemy_items_snapshot[p.summoner_name] = current_items
 
     def _dragon_team(self, evt: dict, game: LiveGameData) -> str:
         """根据击杀者的 summoner_name 找到所属队伍."""

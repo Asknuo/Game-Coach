@@ -67,24 +67,36 @@ class ChromaStore:
                 metadata={"hnsw:space": "cosine"},
             )
             self.available = True
-            logger.info(
-                "ChromaDB ready: items=%d guides=%d champions=%d runes=%d spells=%d game_info=%d",
-                self._items.count(),
-                self._guides.count(),
-                self._champions.count(),
-                self._runes.count(),
-                self._summoner_spells.count(),
-                self._game_info.count(),
-            )
         except Exception:
             logger.exception("ChromaDB collection init failed")
-            self._items = None
-            self._guides = None
-            self._champions = None
-            self._runes = None
-            self._summoner_spells = None
-            self._game_info = None
             self.available = False
+
+    def needs_refresh(self) -> bool:
+        """检查知识库是否需要刷新（无数据 或 超过 7 天未更新）."""
+        import time
+        from pathlib import Path
+        stamp_file = Path(self.persist_dir) / ".last_ingest"
+        if not stamp_file.exists():
+            return True
+        try:
+            elapsed = time.time() - stamp_file.stat().st_mtime
+            if elapsed > 7 * 86400:
+                return True
+        except Exception:
+            return True
+        try:
+            if self._items and self._items.count() == 0:
+                return True
+        except Exception:
+            return True
+        return False
+
+    def mark_ingested(self):
+        """记录知识库更新时间戳."""
+        from pathlib import Path
+        stamp_file = Path(self.persist_dir) / ".last_ingest"
+        stamp_file.parent.mkdir(parents=True, exist_ok=True)
+        stamp_file.write_text("")
 
     @property
     def items(self):

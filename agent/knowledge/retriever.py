@@ -280,7 +280,7 @@ class Retriever:
                     parts.append(doc)
 
         # 4. 装备类事件附加装备建议
-        if event_name in ("item_purchased", "build_check") or "item" in event_query.lower():
+        if event_name in ("item_purchased", "item_sold", "item_upgraded", "enemy_item_purchased", "build_check") or "item" in event_query.lower():
             items = self.search_items(event_query or "recommended build core items", n=2)
             for r in items:
                 doc = r["document"]

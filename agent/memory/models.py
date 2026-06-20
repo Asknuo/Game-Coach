@@ -44,7 +44,7 @@ class RecentGame(BaseModel):
 
 
 class History(BaseModel):
-    recent_games: list[RecentGame] = Field(default_factory=list, max_length=20)
+    recent_games: list[RecentGame] = Field(default_factory=list)
     champion_pool: dict[str, dict[str, Any]] = Field(default_factory=dict)
     common_mistakes: list[dict[str, Any]] = Field(default_factory=list)
     recent_months: str = ""

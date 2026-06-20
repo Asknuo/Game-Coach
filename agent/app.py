@@ -23,6 +23,8 @@ from memory.redis_store import RedisStore
 from memory.store import MemoryStore
 from models.state import CoachEvent, GameState, WSMessage
 from planner.planner import SKILL_REGISTRY, EVENT_TO_SKILL, Planner
+from detector import EventDetector, get_detector
+from map_zones import get_active_zone, get_enemy_zones
 
 load_dotenv()
 
@@ -49,6 +51,8 @@ injector = MemoryInjector()
 
 # ── 对局摘要引擎（保留，断开时用） ─────────────────────
 engine = CoachEngine(memory, injector)
+# ★ 每局打完立即持久化到磁盘（而非等到进程退出）
+engine._on_game_saved = lambda: memory_store.save("default", memory)
 
 # ── 防抖队列（LangGraph 的前置过滤层） ─────────────────
 queue = MemoryQueue(window=15.0, max_per_window=2, skill_cooldown=25.0)
@@ -73,7 +77,30 @@ logger.info(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Game Coach Agent started (LangGraph architecture)")
+
+    # ★ 知识库新鲜度检查：首次启动或超过 7 天未摄入 → 自动刷新
+    if retriever.available:
+        store = retriever.store
+        if store.needs_refresh():
+            logger.info("Knowledge base stale or missing — auto-refreshing...")
+            try:
+                from knowledge.ingest import Ingestor
+                Ingestor().ingest_all()
+            except Exception:
+                logger.exception("Auto-refresh knowledge base failed")
+
+    # ★ HA #1: 每 60 秒自动持久化到磁盘，防止进程崩溃丢数据
+    async def periodic_save():
+        while True:
+            await asyncio.sleep(60)
+            try:
+                memory_store.save("default", memory)
+            except Exception:
+                logger.exception("Periodic memory save failed")
+
+    save_task = asyncio.create_task(periodic_save())
     yield
+    save_task.cancel()
     memory_store.save("default", memory)
     logger.info("Memory saved to disk")
 
@@ -154,6 +181,33 @@ async def latest_tips():
     }
 
 
+@app.get("/games")
+async def list_games():
+    """查询所有历史对局记录（永久保存，不限制数量）."""
+    all_games = [g.model_dump() for g in memory.history.recent_games]
+    return {
+        "total": len(all_games),
+        "games": all_games,
+        "facts": [f.model_dump() for f in memory.facts],
+    }
+
+
+def _is_urgent(event) -> bool:
+    """判断是否紧急事件（绕过防抖队列，立即处理）."""
+    name = event.name
+    data = event.data
+    # 低血量 — 紧急，需要立即回城/回复建议
+    if name == "low_health":
+        return True
+    # 死亡 — 紧急，死亡后需要立即反馈
+    if name == "death":
+        return True
+    # 龙/大龙即将刷新（30秒内）— 紧急预警
+    if name in ("dragon_soon", "baron_soon") and data.get("seconds_left", 99) <= 30:
+        return True
+    return False
+
+
 @app.websocket("/ws/collector")
 async def collector_ws(websocket: WebSocket):
     await websocket.accept()
@@ -215,6 +269,25 @@ async def collector_ws(websocket: WebSocket):
             for client in dead:
                 overlay_clients.discard(client)
 
+            # ★ 反馈闭环：记录发出的建议，供后续检查是否被采纳
+            event_name = result.get("event_name", "")
+            event_data = result.get("event_data", {})
+            redis_store.record_advice_given(
+                "default",
+                skill=tip["skill"],
+                event_name=event_name,
+                context={
+                    "health_pct": (
+                        event_data.get("health_pct", 0) if event_name == "low_health"
+                        else 100
+                    ),
+                    "item_count": len([
+                        it for it in (latest_state.active_player.items if latest_state else [])
+                        if it.itemID != 0
+                    ]),
+                },
+            )
+
     queue.set_handler(handle_coaching)
 
     try:
@@ -225,6 +298,18 @@ async def collector_ws(websocket: WebSocket):
             if msg.type == "state":
                 latest_state = GameState.model_validate(msg.payload)
                 redis_store.save_state("default", msg.payload)
+
+                # ★ 反馈闭环：检查上次建议是否被采纳
+                if latest_state:
+                    followed, reason = redis_store.check_advice_followed(
+                        "default", msg.payload,
+                    )
+                    if followed:
+                        logger.info("Feedback: advice followed (%s)", reason)
+                        redis_store.adjust_skill_confidence("default", "", True)
+                    elif reason != "no_advice":
+                        logger.debug("Feedback: advice not followed (%s)", reason)
+                        redis_store.adjust_skill_confidence("default", "", False)
 
                 # 更新用户上下文
                 ap = latest_state.active_player
@@ -237,23 +322,65 @@ async def collector_ws(websocket: WebSocket):
                     memory.user.game_phase = "mid"
                 else:
                     memory.user.game_phase = "late"
+
+                # ★ 位置区域语义化
+                zone = get_active_zone(msg.payload)
+                enemy_zones = get_enemy_zones(msg.payload)
+                memory.user.context["current_zone"] = zone
+                memory.user.context["enemy_zones"] = enemy_zones
+                logger.debug("Player zone: %s | Enemies visible: %d", zone, len(enemy_zones))
+
+                # ★ Python Detector: 在 Agent 内检测 Go Collector 未覆盖的高级事件
+                py_events = get_detector().detect(msg.payload)
+                for py_evt in py_events:
+                    evt_name = py_evt["name"]
+                    evt_data = py_evt.get("data", {})
+                    event = CoachEvent(name=evt_name, data=evt_data)
+
+                    # 死亡时跳过非龙/大龙事件
+                    if latest_state:
+                        hp_pct = latest_state.active_player_health_pct()
+                        if hp_pct == 0 and evt_name not in ("dragon_soon", "baron_soon"):
+                            continue
+
+                    if _is_urgent(event):
+                        logger.info("URGENT (detector): %s", evt_name)
+                        asyncio.create_task(handle_coaching({
+                            "event": event, "signals": [], "priority": 3,
+                        }))
+                    else:
+                        skill_name = EVENT_TO_SKILL.get(evt_name, "")
+                        meta = SKILL_REGISTRY.get(skill_name, {})
+                        prio = meta.get("priority", 1)
+                        await queue.enqueue({
+                            "event": event, "signals": [], "priority": prio,
+                        })
                 continue
 
             if msg.type == "event":
                 event = CoachEvent.model_validate(msg.payload)
-                # 入口：预处理 → 入队
-                # 死亡时跳过低优先级事件
+                # 入口：死亡时跳过非龙/大龙事件
                 if latest_state:
                     hp_pct = latest_state.active_player_health_pct()
                     if hp_pct == 0 and event.name not in ("dragon_soon", "baron_soon"):
                         continue
 
-                # 优先级（从 SKILL_REGISTRY 获取）
+                # ★ 紧急事件：绕过队列，立即处理
+                if _is_urgent(event):
+                    logger.info("URGENT event: %s — bypassing queue", event.name)
+                    asyncio.create_task(handle_coaching({
+                        "event": event,
+                        "signals": [],
+                        "priority": 3,
+                    }))
+                    continue
+
+                # 非紧急事件进入防抖队列
                 skill_name = EVENT_TO_SKILL.get(event.name, "")
                 meta = SKILL_REGISTRY.get(skill_name, {})
                 prio = meta.get("priority", 1)
                 if event.name in ("dragon_soon", "baron_soon") and event.data.get("seconds_left", 99) <= 10:
-                    prio = 3  # 即将刷新升级为高优先级
+                    prio = 3
 
                 await queue.enqueue({
                     "event": event,
@@ -264,14 +391,29 @@ async def collector_ws(websocket: WebSocket):
     except WebSocketDisconnect:
         logger.info("collector disconnected")
         if latest_state and latest_state.game_time > 120:
+            # 从 Live Client 事件中提取 KDA
+            kills, deaths, assists = 0, 0, 0
+            for ev in latest_state.events:
+                if ev.event_name == "ChampionKill" and ev.event_time > 0:
+                    pass  # 事件层面不分己方/敌方
             summary = {
                 "champion": memory.user.current_champion,
                 "game_time_s": latest_state.game_time,
                 "level": latest_state.active_player.level,
                 "gold": latest_state.active_player.current_gold,
+                "kills": kills,
+                "deaths": deaths,
+                "assists": assists,
             }
-            asyncio.create_task(engine.summarize_game("default", summary))
-        memory_store.save("default", memory)
+            # ★ 等待摘要完成再继续（确保持久化已完成）
+            try:
+                await asyncio.wait_for(
+                    engine.summarize_game("default", summary), timeout=15.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Game summary timed out")
+            except Exception:
+                logger.exception("Game summary failed")
         memory.user.top_of_mind.clear()
     except Exception:
         logger.exception("websocket error")

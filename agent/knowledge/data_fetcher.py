@@ -89,18 +89,21 @@ class DataDragonFetcher:
         logger.info("Fetched %d champions (with skills)", len(champions))
         return champions
 
-    def fetch_items(self) -> list[dict] | None:
-        """拉取所有装备数据，返回 list[item_data]。"""
+    def fetch_items(self) -> dict[str, dict] | None:
+        """拉取所有装备数据，返回 {itemID: item_data} dict。"""
         url = f"{CDN_BASE}/data/en_US/item.json".format(version=self.version)
         raw = self._fetch_json(url)
         if raw is None:
             return None
 
         data_obj = raw.get("data", raw) if isinstance(raw, dict) else {}
-        items = list(data_obj.values())
-        items.sort(key=lambda i: i.get("name", ""))
+        # 保留原始 ID 作为 key，同时把 ID 写入每个 item 内部方便后续使用
+        items = {}
+        for item_id, item_data in data_obj.items():
+            item_data["id"] = item_id
+            items[item_id] = item_data
         self._save_json("items.json", items)
-        logger.info("Fetched %d items", len(items))
+        logger.info("Fetched %d items (with IDs)", len(items))
         return items
 
     def fetch_runes(self) -> list[dict] | None:

@@ -25,6 +25,17 @@ class MemoryInjector:
                 f" | KDA: {u.kda.get('kills', 0)}/{u.kda.get('deaths', 0)}/{u.kda.get('assists', 0)}"
                 f" | Gold: {int(u.current_gold)} | Lv: {u.current_level}"
             )
+
+        # 1.5. 位置信息
+        zone = u.context.get("current_zone", "")
+        if zone:
+            parts.append(f"Player zone: {zone}")
+        enemy_zones = u.context.get("enemy_zones", {})
+        if enemy_zones:
+            zs = []
+            for e_name, e_zone in list(enemy_zones.items())[:3]:
+                zs.append(f"{e_name} in {e_zone}")
+            parts.append("Enemy positions: " + "; ".join(zs))
         if u.top_of_mind:
             parts.append(f"Focus: {'; '.join(u.top_of_mind[-4:])}")
 

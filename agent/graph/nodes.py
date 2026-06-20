@@ -78,6 +78,22 @@ def detect_signals(state: CoachState) -> CoachState:
 
     # ── 信号分类 ──
     if name == "low_health":
+        # ★ 上下文抑制：避免无意义的低血量提示
+        from models.state import get_position_distance
+
+        # 1. 在泉水附近 — 已经回城/正在回复，不发
+        active_pos = active.get("position", {"x": 0, "y": 0})
+        fountain_dist = get_position_distance(active_pos, {"x": 0, "y": 0})
+        if fountain_dist < 1500:
+            logger.debug("detect_signals: skip low_health (in fountain)")
+            return {**state, "is_valid": False, "skip_reason": "in_fountain"}
+
+        # 2. 刚击杀敌人（< 5s）— 刚赢了一波，给正面反馈
+        kill_count_before = gs.get("kill_count_before", 0) if gs else 0
+        if data.get("total_kills", 0) > kill_count_before:
+            logger.debug("detect_signals: skip low_health (just killed enemy)")
+            return {**state, "is_valid": False, "skip_reason": "just_killed_enemy"}
+
         priority = 3
         signals.append("low_health")
         if hp_pct < 15:
@@ -150,6 +166,42 @@ def route_skill(state: CoachState) -> CoachState:
         query_parts.append("when low health recall sustain laning recovery")
     elif state["event_name"] == "item_purchased":
         query_parts.append("recommended next items build order")
+    elif state["event_name"] == "item_sold":
+        from knowledge.item_resolver import get_item_resolver
+        resolver = get_item_resolver()
+        sold_id = state.get("event_data", {}).get("item_id", 0)
+        name = resolver.get_name(sold_id)
+        query_parts.append(f"sold {name} freed inventory slot next item build order")
+    elif state["event_name"] == "item_upgraded":
+        from knowledge.item_resolver import get_item_resolver
+        resolver = get_item_resolver()
+        old_id = state.get("event_data", {}).get("old_item_id", 0)
+        new_id = state.get("event_data", {}).get("new_item_id", 0)
+        old_name = resolver.get_name(old_id)
+        new_name = resolver.get_name(new_id)
+        query_parts.append(f"upgraded {old_name} to {new_name} completed item powerspike")
+    elif state["event_name"] == "enemy_item_purchased":
+        from knowledge.item_resolver import get_item_resolver
+        resolver = get_item_resolver()
+        enemy_champ = state.get("event_data", {}).get("enemy_champion", "")
+        enemy_name = state.get("event_data", {}).get("enemy_name", "")
+        item_ids = state.get("event_data", {}).get("item_ids", [])
+
+        # 翻译 itemID → 物品名称
+        item_names = resolver.get_names(item_ids)
+        item_descs = [resolver.describe_item(iid) for iid in item_ids]
+
+        # 把名称写回 event_data，后续节点（inject_memory、llm_polish）可直接用
+        state["event_data"]["item_names"] = item_names
+        state["event_data"]["item_descs"] = item_descs
+
+        if enemy_champ:
+            query_parts.append(f"enemy {enemy_champ} {enemy_name} purchased {' '.join(item_names)} counter build counter items")
+        if item_names:
+            query_parts.append(f"items {' '.join(item_names)} counter")
+    elif state["event_name"] == "kill":
+        kills = state.get("event_data", {}).get("total_kills", 1)
+        query_parts.append(f"after getting kill {kills} what to do objective push tower dragon capitalize advantage")
     else:
         query_parts.append("strategy tips priority")
 
@@ -169,6 +221,12 @@ def retrieve_knowledge(state: CoachState) -> CoachState:
     champion = ""
     enemy_champion = ""
     game_time = 0.0
+    event_name = state.get("event_name", "")
+
+    # ★ enemy_item_purchased 事件：直接用事件数据中的敌方英雄
+    if event_name == "enemy_item_purchased":
+        event_data = state.get("event_data", {})
+        enemy_champion = event_data.get("enemy_champion", "")
 
     if gs:
         active_player = gs.get("active_player", {})
@@ -183,14 +241,18 @@ def retrieve_knowledge(state: CoachState) -> CoachState:
                 active_pos = p.get("position", active_pos)
                 break
 
-        if active_team and active_pos:
+        if active_team and active_pos and event_name != "enemy_item_purchased":
             active_x = active_pos.get("x", 0) if isinstance(active_pos, dict) else 0
             active_y = active_pos.get("y", 0) if isinstance(active_pos, dict) else 0
             best_dist = float("inf")
+            from models.state import is_position_valid
             for p in all_players:
                 if p.get("team") and p["team"] != active_team:
                     enemy_pos = p.get("position", {})
                     if isinstance(enemy_pos, dict):
+                        # ★ 坐标有效性校验：排除 (0,0) 等无效坐标
+                        if not is_position_valid(enemy_pos):
+                            continue
                         ex = enemy_pos.get("x", 0)
                         ey = enemy_pos.get("y", 0)
                         dist = ((active_x - ex) ** 2 + (active_y - ey) ** 2) ** 0.5
@@ -201,7 +263,6 @@ def retrieve_knowledge(state: CoachState) -> CoachState:
         game_time = gs.get("game_time", 0)
 
     rag_query = state.get("rag_query", "")
-    event_name = state.get("event_name", "")
 
     aggregated = retriever.aggregate_coaching_context(
         ally_champion=champion,
@@ -308,7 +369,31 @@ def validate(state: CoachState) -> CoachState:
 # ── 发布 ──────────────────────────────────────────────
 
 def publish(state: CoachState) -> CoachState:
-    """标记 tip 输出，由调用方发送 WebSocket."""
+    """标记 tip 输出，含时效性检查."""
+    # ★ 时效性检查：如果关键条件已经变了，放弃这条建议
+    gs = state.get("game_state", {})
+    event_name = state.get("event_name", "")
+    event_data = state.get("event_data", {})
+
+    if gs:
+        active = gs.get("active_player", {}) if gs else {}
+        hp = active.get("health", 1)
+        max_hp = active.get("max_health", 1)
+        hp_pct = hp / max_hp * 100 if max_hp > 0 else 100
+
+        # low_health: 血量已经恢复 > 50% → 取消
+        if event_name == "low_health" and hp_pct > 50:
+            logger.debug("publish: skip low_health (HP recovered to %.0f%%)", hp_pct)
+            return {**state, "should_publish": False, "skip_reason": "hp_recovered"}
+
+        # item_purchased / enemy_item_purchased: 装备已不在栏位 → 取消
+        if event_name in ("item_purchased", "enemy_item_purchased") and active.get("items"):
+            event_item_ids = set(event_data.get("item_ids", []))
+            current_ids = {it.get("itemID", 0) for it in active.get("items", [])}
+            if event_item_ids and event_item_ids.isdisjoint(current_ids):
+                logger.debug("publish: skip %s (items no longer in inventory)", event_name)
+                return {**state, "should_publish": False, "skip_reason": "items_gone"}
+
     redis = _injections.get("redis_store")
     if redis:
         redis.mark_tip_sent(state["session_id"], state["skill_name"])

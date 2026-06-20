@@ -129,8 +129,26 @@ class Planner:
         elif name == "item_purchased":
             return "Item purchased — consider next item based on enemy composition."
 
+        elif name == "item_sold":
+            item_id = data.get("item_id", data.get("new_item_id", "unknown"))
+            return f"Item sold (ID: {item_id}) — inventory space freed."
+
+        elif name == "item_upgraded":
+            old_id = data.get("old_item_id", "unknown")
+            new_id = data.get("new_item_id", "unknown")
+            return f"Item upgraded (ID: {old_id} → {new_id}) — power spike incoming."
+
+        elif name == "enemy_item_purchased":
+            enemy_champ = data.get("enemy_champion", "enemy")
+            item_count = data.get("total_items", 0)
+            return f"Enemy {enemy_champ} bought item(s) (total: {item_count}) — check their build and counter."
+
         elif name == "gold_spike":
             return f"Gold spike ({data.get('delta', 0)}g) — consider your next purchase."
+
+        elif name == "kill":
+            kills = data.get("total_kills", 1)
+            return f"Kill secured ({kills} total) — capitalize on the numbers advantage."
 
         elif name == "laning_check":
             return "Laning phase check — wave management and trading advice."

@@ -1,10 +1,17 @@
-"""防抖队列 — 聚合事件窗口，批量触发 coaching 生成."""
+"""防抖队列 — 聚合事件窗口，批量触发 coaching 生成.
+
+紧急事件（low_health, death, dragon_soon <= 30s）应绕过此队列直接处理，
+但本队列也做防御性过滤避免误入。
+"""
 
 import asyncio
 import logging
 import time
 
 logger = logging.getLogger(__name__)
+
+# 紧急事件列表（不应入队）
+URGENT_EVENTS = frozenset({"low_health", "death"})
 
 
 class MemoryQueue:
@@ -37,6 +44,11 @@ class MemoryQueue:
     async def enqueue(self, item: dict):
         event_name = item["event"].name
         now = time.time()
+
+        # ★ 防御性过滤：紧急事件不应入此队列
+        if event_name in URGENT_EVENTS:
+            logger.warning("queue: rejected urgent event %s (should bypass queue)", event_name)
+            return
 
         # 同 skill 去重
         if event_name in self._last_skill_time:

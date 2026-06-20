@@ -2,18 +2,23 @@
 桌面小玩偶（Desktop Pet Companion）
 - 小巧的桌面窗口，始终置顶
 - 通过 WebSocket 接收教练建议
-- 用系统自带 TTS 朗读出来（pyttsx3）
+- 用 Edge TTS 朗读（中文自然度极高），pyttsx3 作为回退方案
 - 可爱的卡通角色 + 气泡文字
 
 启动方式: python companion.py
-依赖: pip install pyttsx3
+依赖: 
+  - 首选: pip install edge-tts      （免费、中文自然、微软 Edge 引擎）
+  - 回退: pip install pyttsx3       （离线、机械化）
+  - 必需: pip install websocket-client
 """
 
 import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -25,11 +30,21 @@ try:
 except ImportError:
     HAS_TK = False
 
+# ── TTS 引擎优先级：Edge TTS > pyttsx3 > silent ──
+HAS_EDGE_TTS = False
+HAS_PYTTSX3 = False
+
+try:
+    import edge_tts
+    HAS_EDGE_TTS = True
+except ImportError:
+    pass
+
 try:
     import pyttsx3
-    HAS_TTS = True
+    HAS_PYTTSX3 = True
 except ImportError:
-    HAS_TTS = False
+    pass
 
 try:
     import websocket
@@ -44,25 +59,78 @@ logger = logging.getLogger("companion")
 AGENT_HOST = os.getenv("AGENT_HOST", "localhost")
 AGENT_PORT = os.getenv("AGENT_PORT", "8000")
 WS_URL = f"ws://{AGENT_HOST}:{AGENT_PORT}/ws/overlay"
+# 首选 Edge TTS 中文女声
+EDGE_VOICE = os.getenv("EDGE_VOICE", "zh-CN-XiaoxiaoNeural")
+EDGE_RATE = os.getenv("EDGE_RATE", "+15%")  # 稍快更清晰
 
 
 # ═══════════════════════════════════════════════════════
-# TTS 引擎
+# Edge TTS 引擎（首选：微软免费中文引擎，自然度高）
 # ═══════════════════════════════════════════════════════
-class TTSEngine:
+class EdgeTTSEngine:
+    """使用微软 Edge TTS 免费 API，中文语音效果极佳."""
+
+    def __init__(self):
+        self.muted = False
+        self._loop = None
+
+    def speak(self, text: str):
+        if self.muted or not HAS_EDGE_TTS:
+            return
+        try:
+            asyncio.run(self._speak_async(text))
+        except Exception as e:
+            logger.debug("Edge TTS failed: %s", e)
+
+    async def _speak_async(self, text: str):
+        try:
+            communicate = edge_tts.Communicate(text, EDGE_VOICE, rate=EDGE_RATE)
+            # 写入临时文件 → 用系统默认播放器播放
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                tmp_path = f.name
+            await communicate.save(tmp_path)
+            self._play_audio(tmp_path)
+            # 延迟删除临时文件
+            threading.Thread(target=lambda: (time.sleep(2), os.unlink(tmp_path)), daemon=True).start()
+        except Exception as e:
+            logger.debug("Edge TTS async failed: %s", e)
+
+    @staticmethod
+    def _play_audio(filepath: str):
+        """跨平台播放音频文件."""
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["powershell", "-c", f'(New-Object Media.SoundPlayer "{filepath}").PlaySync()'],
+                    capture_output=True, timeout=15,
+                )
+            elif sys.platform == "darwin":
+                subprocess.run(["afplay", filepath], capture_output=True, timeout=15)
+            else:
+                subprocess.run(["ffplay", "-nodisp", "-autoexit", filepath], capture_output=True, timeout=15)
+        except Exception:
+            pass
+
+    def stop(self):
+        pass  # Edge TTS 是同步阻塞播放，stop 不支持
+
+
+# ═══════════════════════════════════════════════════════
+# PyTTSX3 引擎（回退：离线 TTS，中文效果一般）
+# ═══════════════════════════════════════════════════════
+class Pyttsx3Engine:
     def __init__(self):
         self.engine = None
         self.voices = []
         self.current_voice_id = None
         self.muted = False
-        if HAS_TTS:
+        if HAS_PYTTSX3:
             self._init()
 
     def _init(self):
         try:
             self.engine = pyttsx3.init()
             self.voices = self.engine.getProperty("voices")
-            # 优先选中文语音
             for v in self.voices:
                 lang = getattr(v, "languages", [])
                 lang_str = lang[0].decode() if isinstance(lang[0], bytes) else lang[0] if lang else ""
@@ -71,10 +139,10 @@ class TTSEngine:
                     break
             if self.current_voice_id:
                 self.engine.setProperty("voice", self.current_voice_id)
-            self.engine.setProperty("rate", 160)  # 稍慢，更清晰
+            self.engine.setProperty("rate", 160)
             self.engine.setProperty("volume", 0.9)
         except Exception as e:
-            logger.warning("TTS init failed: %s", e)
+            logger.warning("pyttsx3 init failed: %s", e)
             self.engine = None
 
     def speak(self, text: str):
@@ -100,6 +168,45 @@ class TTSEngine:
 
     def get_voice_names(self) -> list:
         return [v.name for v in self.voices]
+
+
+# ═══════════════════════════════════════════════════════
+# TTS 出口（自动选择最佳引擎）
+# ═══════════════════════════════════════════════════════
+class TTSEngine:
+    """TTS 门面：Edge TTS（首选）→ pyttsx3（回退）→ 静音."""
+
+    def __init__(self):
+        self.muted = False
+        if HAS_EDGE_TTS:
+            self._engine = EdgeTTSEngine()
+            self._name = "edge-tts"
+            logger.info("TTS: using Edge TTS (%s)", EDGE_VOICE)
+        elif HAS_PYTTSX3:
+            self._engine = Pyttsx3Engine()
+            self._name = "pyttsx3"
+            logger.info("TTS: using pyttsx3 (fallback)")
+        else:
+            self._engine = None
+            self._name = "silent"
+            logger.warning("TTS: no engine available — install edge-tts or pyttsx3")
+
+    def speak(self, text: str):
+        if self.muted or self._engine is None:
+            return
+        self._engine.speak(text)
+
+    def stop(self):
+        if self._engine:
+            self._engine.stop()
+
+    def set_voice(self, voice_id: str):
+        if self._engine and hasattr(self._engine, "set_voice"):
+            self._engine.set_voice(voice_id)
+
+    @property
+    def engine_name(self) -> str:
+        return self._name
 
 
 # ═══════════════════════════════════════════════════════
@@ -417,20 +524,12 @@ def main():
         print("ERROR: tkinter is required (built-in with Python, reinstall Python with tk support)")
         sys.exit(1)
 
-    if not HAS_TTS:
-        print("ERROR: pyttsx3 not installed. Run: pip install pyttsx3")
-        sys.exit(1)
-
     if not HAS_WS:
         print("ERROR: websocket-client not installed. Run: pip install websocket-client")
         sys.exit(1)
 
     tts = TTSEngine()
-    if tts.engine:
-        voices = tts.get_voice_names()
-        logger.info("TTS ready, %d voices available", len(voices))
-    else:
-        logger.warning("TTS could not initialize - audio may not work")
+    logger.info("TTS engine: %s", tts.engine_name)
 
     # 先创建 pet，再启动 WS 线程
     ws_thread = threading.Thread(target=_start_ws, args=(None,), daemon=True)

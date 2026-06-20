@@ -81,3 +81,25 @@ class CoachingTip(BaseModel):
 class WSMessage(BaseModel):
     type: str
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+# ── 位置工具函数 ──
+
+
+def get_position_distance(a: dict | Vec2, b: dict | Vec2) -> float:
+    """计算两个坐标之间的欧氏距离。适用 dict 和 Vec2 输入."""
+    ax = a.get("x", 0) if isinstance(a, dict) else a.x
+    ay = a.get("y", 0) if isinstance(a, dict) else a.y
+    bx = b.get("x", 0) if isinstance(b, dict) else b.x
+    by = b.get("y", 0) if isinstance(b, dict) else b.y
+    return ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+
+
+def is_position_valid(pos: dict | Vec2) -> bool:
+    """检查坐标是否有效（非 (0,0) 且非空）."""
+    if isinstance(pos, dict):
+        x = pos.get("x", 0)
+        y = pos.get("y", 0)
+    else:
+        x, y = pos.x, pos.y
+    return x != 0 or y != 0
