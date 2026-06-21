@@ -401,7 +401,26 @@
 
 ---
 
-## 七、优化后的数据流
+## 八、运行时 Bug 修复 (2026-06-21)
+
+### #53 LCU poller "websocket: close sent" 错误刷屏
+- **文件**: `collector/internal/sender/websocket.go`
+- **现象**: 日志反复出现 `[LCU] send event failed: websocket: close sent`，每次断连时重复 5-10 次
+- **根因**: LCU poller 作为独立 goroutine 运行，与主循环共享 `ws` 连接。WebSocket 断开后，`runLoop` 返回但在 `ws.Close()` 清零 `w.conn` 之前，LCU poller 回调仍在并发调用 `ws.SendEvent()`，写入已死连接
+- **修复**: 在 `send()` 中，`WriteMessage` 失败后立即设置 `w.conn = nil`，后续并发 send 走缓冲路径。事件数据不丢失 — 缓冲在重连后重放。所有 `w.conn` 访问均受 `writeMu` 保护
+- **日期**: 2026-06-21
+
+### #54 Go nil 切片序列化导致 Pydantic `all_players` 校验失败 — Agent 频繁断连
+- **文件**: `collector/internal/lol/parser.go`, `agent/models/state.py`
+- **现象**: agent 日志反复报 `ValidationError: all_players — Input should be a valid list [input_value=None]`，每次报错后 collector 重连，形成断连→重连循环
+- **根因**: Live Client API 响应中可能缺少 `allPlayers` 字段（加载画面、游戏初期）。Go `ParseGameState` 创建的 `AllPlayers` 切片为零值 nil，`json.Marshal` 将 nil 切片序列化为 `null`。Python Pydantic `GameState.all_players: list[Player]` 拒绝 `null`
+- **修复 (Go 根因)**: `ParseGameState` 初始化 `AllPlayers` 和 `Events` 为空切片 `[]Player{}` / `[]GameEvent{}`
+- **修复 (Python 防御层)**: `GameState` 加 `@field_validator("all_players", "events", mode="before")`，将 `None` 自动转为 `[]`
+- **日期**: 2026-06-21
+
+---
+
+## 九、优化后的数据流
 
 ```
 游戏客户端 → Live Client API (127.0.0.1:2999)
