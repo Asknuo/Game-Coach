@@ -33,8 +33,10 @@ var cooldownDurations = map[string]time.Duration{
 	"enemy_item_sold":      30 * time.Second,
 	"enemy_gold_lead":      120 * time.Second,
 	"enemy_fed":            90 * time.Second,
-	"jungle_check":         120 * time.Second,
-	"strategy_check":       300 * time.Second,
+	"laning_check":         120 * time.Second,
+	"macro_check":          300 * time.Second,
+	"teamfight_detected":   90 * time.Second,
+	"game_end":             0, // no cooldown — one-shot event
 	// death: no cooldown — each death event is a distinct occurrence
 }
 

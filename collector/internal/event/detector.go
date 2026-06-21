@@ -23,16 +23,19 @@ type Detector struct {
 
 	// -- migrated from Python EventDetector --
 	lastDeaths      int
-	lastKills       map[string]int            // summonerName → kills
-	lastActiveItems map[int]int               // slot → itemID
+	lastKills       map[string]int // summonerName → kills
+	lastActiveItems map[int]int    // slot → itemID
 	lastGold        float64
-	enemyItems      map[string]map[int]int    // enemyName → slot → itemID
+	enemyItems      map[string]map[int]int // enemyName → slot → itemID
 
 	// -- enemy threat tracking --
-	enemyGoldWarned    map[string]bool  // enemyName → already warned for gold lead
-	enemyFedMilestones map[string]int   // enemyName → last kill milestone warned
+	enemyGoldWarned    map[string]bool // enemyName → already warned for gold lead
+	enemyFedMilestones map[string]int  // enemyName → last kill milestone warned
 
-	initialized bool  // first tick after reset: record snapshots, skip events
+	// -- teamfight detection --
+	recentKillTimes []float64 // ChampionKill event times in the current window
+
+	initialized bool // first tick after reset: record snapshots, skip events
 }
 
 func NewDetector() *Detector {
@@ -110,9 +113,12 @@ func (d *Detector) Detect(state *lol.GameState) []Event {
 	// ── Periodic checks (need lastState) ──
 
 	if d.lastState != nil {
-		events = append(events, d.detectJungle(state)...)
-		events = append(events, d.detectStrategy(state)...)
+		events = append(events, d.detectLaning(state)...)
+		events = append(events, d.detectMacro(state)...)
 	}
+
+	// ── Teamfight detection ──
+	events = append(events, d.detectTeamfight(state)...)
 
 	d.lastState = state
 	return events
@@ -210,8 +216,8 @@ func (d *Detector) detectMyItems(ap *lol.Player, gameTime float64) []Event {
 		events = append(events, Event{
 			Name: "item_purchased",
 			Data: map[string]interface{}{
-				"item_id":  id,
-				"action":   "purchased",
+				"item_id":   id,
+				"action":    "purchased",
 				"game_time": gameTime,
 			},
 		})
@@ -225,8 +231,8 @@ func (d *Detector) detectMyItems(ap *lol.Player, gameTime float64) []Event {
 		events = append(events, Event{
 			Name: "item_sold",
 			Data: map[string]interface{}{
-				"item_id":  id,
-				"action":   "sold_or_consumed",
+				"item_id":   id,
+				"action":    "sold_or_consumed",
 				"game_time": gameTime,
 			},
 		})
@@ -237,11 +243,11 @@ func (d *Detector) detectMyItems(ap *lol.Player, gameTime float64) []Event {
 		events = append(events, Event{
 			Name: "item_upgraded",
 			Data: map[string]interface{}{
-				"slot":         u.slot,
-				"old_item_id":  u.oldID,
-				"new_item_id":  u.newID,
-				"action":       "upgraded",
-				"game_time":    gameTime,
+				"slot":        u.slot,
+				"old_item_id": u.oldID,
+				"new_item_id": u.newID,
+				"action":      "upgraded",
+				"game_time":   gameTime,
 			},
 		})
 	}
@@ -494,10 +500,14 @@ func (d *Detector) detectEnemyFed(state *lol.GameState) []Event {
 
 // ── Periodic checks ──
 
-func (d *Detector) detectJungle(state *lol.GameState) []Event {
-	if int(state.GameTime)/180 > int(d.lastState.GameTime)/180 && state.GameTime >= 120 {
+// detectLaning emits "laning_check" every 3 minutes during the laning phase (game_time < 14 min).
+func (d *Detector) detectLaning(state *lol.GameState) []Event {
+	if state.GameTime >= 14*60 || state.GameTime < 120 {
+		return nil
+	}
+	if int(state.GameTime)/180 > int(d.lastState.GameTime)/180 {
 		return []Event{{
-			Name: "jungle_check",
+			Name: "laning_check",
 			Data: map[string]interface{}{
 				"game_time": state.GameTime,
 			},
@@ -506,12 +516,48 @@ func (d *Detector) detectJungle(state *lol.GameState) []Event {
 	return nil
 }
 
-func (d *Detector) detectStrategy(state *lol.GameState) []Event {
-	if int(state.GameTime)/300 > int(d.lastState.GameTime)/300 && state.GameTime >= 180 {
+// detectMacro emits "macro_check" every 5 minutes during mid/late game (game_time >= 14 min).
+func (d *Detector) detectMacro(state *lol.GameState) []Event {
+	if state.GameTime < 14*60 || state.GameTime < 180 {
+		return nil
+	}
+	if int(state.GameTime)/300 > int(d.lastState.GameTime)/300 {
 		return []Event{{
-			Name: "strategy_check",
+			Name: "macro_check",
 			Data: map[string]interface{}{
-				"champion":  state.ActivePlayer.SummonerName,
+				"game_time": state.GameTime,
+			},
+		}}
+	}
+	return nil
+}
+
+// detectTeamfight emits "teamfight_detected" when 3+ ChampionKill events
+// occur within a 15-second window (game time).
+func (d *Detector) detectTeamfight(state *lol.GameState) []Event {
+	// Prune old kill times outside the 15s window.
+	cutoff := state.GameTime - 15
+	kept := d.recentKillTimes[:0]
+	for _, t := range d.recentKillTimes {
+		if t >= cutoff {
+			kept = append(kept, t)
+		}
+	}
+	d.recentKillTimes = kept
+
+	// Collect new ChampionKill events from this tick.
+	for _, ev := range state.Events {
+		if ev.EventName == "ChampionKill" {
+			d.recentKillTimes = append(d.recentKillTimes, ev.EventTime)
+		}
+	}
+
+	// 3+ kills in 15s window → teamfight.
+	if len(d.recentKillTimes) >= 3 {
+		d.recentKillTimes = nil // reset to avoid immediate re-trigger
+		return []Event{{
+			Name: "teamfight_detected",
+			Data: map[string]interface{}{
 				"game_time": state.GameTime,
 			},
 		}}
@@ -575,5 +621,6 @@ func (d *Detector) reset() {
 	d.enemyItems = nil
 	d.enemyGoldWarned = nil
 	d.enemyFedMilestones = nil
+	d.recentKillTimes = nil
 	d.initialized = false
 }

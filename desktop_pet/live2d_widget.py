@@ -9,9 +9,11 @@ Live2D 渲染组件 — 通过 QWebEngineView 加载 Live2D HTML 页面。
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSlot, pyqtSignal, QUrl, Qt
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
@@ -100,6 +102,27 @@ class Live2DWidget(QWebEngineView):
                 'color:rgba(255,255,255,0.5);font-size:14px;">'
                 'Live2D 页面未找到</body></html>'
             )
+
+    # ── 拖拽移动 ── 使用 Windows API (ReleaseCapture + SendMessage) ──
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._start_drag()
+            return  # 不调 super()，阻止 Chromium 抢鼠标
+        super().mousePressEvent(event)
+
+    def _start_drag(self):
+        """通过 Windows API 启动窗口拖拽 (对 QWebEngineView 100% 有效)。"""
+        if sys.platform != 'win32':
+            return
+        try:
+            import ctypes
+            hwnd = int(self.window().winId())
+            ctypes.windll.user32.ReleaseCapture()
+            # WM_NCLBUTTONDOWN (0x00A1) + HTCAPTION (0x0002)
+            ctypes.windll.user32.SendMessageW(hwnd, 0x00A1, 0x0002, 0)
+        except Exception:
+            pass
 
     # ── Python → JavaScript API ──────────────────
 

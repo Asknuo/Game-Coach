@@ -3,93 +3,63 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Live2D Pet</title>
+<title>Game Coach Pet</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    background: transparent;
+    width: 100%; height: 100%; overflow: hidden; background: transparent;
   }
   #live2d-canvas {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: transparent;
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%; background: transparent;
   }
   #placeholder {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: transparent;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%; background: transparent;
+    display: flex; align-items: center; justify-content: center;
     font-family: 'Microsoft YaHei', sans-serif;
-    color: rgba(255,255,255,0.6);
-    font-size: 14px;
-    pointer-events: none; /* stylelint-disable-line */
+    color: rgba(255,255,255,0.5); font-size: 13px;
+    pointer-events: none;
   }
   #speech-bubble {
-    position: absolute;
-    top: 5%;
-    left: 50%;
+    position: absolute; top: 6%; left: 50%;
     transform: translateX(-50%);
-    background: rgba(30, 41, 59, 0.92);
-    border: 1px solid rgba(51, 65, 85, 0.8);
-    border-radius: 14px;
-    padding: 10px 18px;
-    color: #e2e8f0;
-    font-family: 'Microsoft YaHei', sans-serif;
-    font-size: 12px;
-    font-weight: 500;
-    max-width: 90%;
-    text-align: center;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-    pointer-events: none;
-    z-index: 10;
+    background: rgba(20, 28, 48, 0.94);
+    border: 1px solid rgba(91, 58, 140, 0.5);
+    border-radius: 16px; padding: 10px 16px;
+    color: #e8e0f0; font-family: 'Microsoft YaHei', sans-serif;
+    font-size: 11px; font-weight: 500; max-width: 88%;
+    text-align: center; opacity: 0;
+    transition: opacity 0.3s ease; pointer-events: none; z-index: 10;
+    box-shadow: 0 4px 16px rgba(91, 58, 140, 0.2);
   }
   #speech-bubble.show { opacity: 1; }
   #speech-bubble::after {
-    content: '';
-    position: absolute;
-    bottom: -8px;
-    left: 50%;
+    content: ''; position: absolute; bottom: -7px; left: 50%;
     transform: translateX(-50%);
-    width: 0;
-    height: 0;
-    border-left: 8px solid transparent;
-    border-right: 8px solid transparent;
-    border-top: 8px solid rgba(30, 41, 59, 0.92);
+    width: 0; height: 0;
+    border-left: 7px solid transparent;
+    border-right: 7px solid transparent;
+    border-top: 7px solid rgba(20, 28, 48, 0.94);
   }
 </style>
 </head>
 <body>
-
 <canvas id="live2d-canvas"></canvas>
-<div id="placeholder">Live2D 模型加载中...<br>请将模型文件放入 model/ 目录</div>
+<div id="placeholder">连接中...</div>
 <div id="speech-bubble"></div>
 
 <script>
 // ═══════════════════════════════════════════════════════
-// Live2D Pet Controller (Web 端)
-// 支持两种模式：
-//   A) 完整 Live2D (需 Cubism SDK + model 文件)
-//   B) Canvas 绘制回退角色 — 可爱动漫女主 (开箱即用)
+// Game Coach Pet — Cute Anime Chibi Girl
 // ═══════════════════════════════════════════════════════
 
-let mode = 'canvas';
-let speechTimer = null;
-const canvas = document.getElementById('live2d-canvas');
-const ctx = canvas.getContext('2d');
-const bubble = document.getElementById('speech-bubble');
-const placeholder = document.getElementById('placeholder');
+var mode = 'canvas';
+var speechTimer = null;
+var canvas = document.getElementById('live2d-canvas');
+var ctx = canvas.getContext('2d');
+var bubble = document.getElementById('speech-bubble');
+var placeholder = document.getElementById('placeholder');
 
 function resizeCanvas() {
   canvas.width = window.innerWidth;
@@ -98,477 +68,550 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-// ── QWebChannel 桥接 ──
-let bridge = null;
+var bridge = null;
 if (typeof QWebChannel !== 'undefined') {
-  new QWebChannel(qt.webChannelTransport, function(channel) {
-    bridge = channel.objects.bridge;
+  new QWebChannel(qt.webChannelTransport, function(ch) {
+    bridge = ch.objects.bridge;
     if (bridge) bridge.on_ready();
   });
 }
 
-// ── 动画状态 ──
-let animFrame = 0;
-let bobOffset = 0;
-let blinkTimer = 0;
-let blinkThreshold = 200;
-let isBlinking = false;
+// ── animation ──
+var frame = 0;
+var bobY = 0;
+var blinkT = 0, blinkTh = 200, blinking = false;
 
 function S() { return Math.min(canvas.width, canvas.height) / 480; }
 
+// ── helpers ──
+function _rr(x,y,w,h,r) { ctx.beginPath(); ctx.roundRect(x,y,w,h,r); ctx.fill(); }
+
+// ── MAIN DRAW ────────────────────────────────
 function drawCanvasPet() {
-  const w = canvas.width, h = canvas.height;
-  const s = S();
+  var s = S();
+  var w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
+  frame = (frame + 1) % 100000;
+  bobY = Math.sin(frame * 0.022) * 4 * s;
+  var hairSway = Math.sin(frame * 0.018) * 3 * s;
 
-  bobOffset = Math.sin(animFrame * 0.025) * 3 * s;
-  animFrame = (animFrame + 1) % 100000;
+  // blink
+  blinkT++;
+  if (blinkT > blinkTh) { blinking = true; }
+  if (blinkT > blinkTh + 5) { blinkT = 0; blinking = false; blinkTh = 170 + ~~(Math.random() * 130); }
 
-  blinkTimer++;
-  if (blinkTimer > blinkThreshold) {
-    isBlinking = true;
-    if (blinkTimer > blinkThreshold + 6) {
-      blinkTimer = 0;
-      isBlinking = false;
-      blinkThreshold = 180 + ~~(Math.random() * 120);
-    }
-  }
-
-  const cx = w / 2;
-  const baseY = h * 0.58 + bobOffset;
   ctx.save();
 
-  // ─────── 颜色 ───────
-  const hairPink = '#f8a0b8', hairDark = '#e87890', hairShadow = '#d46078';
-  const skinLight = '#fff5ee', skinMid = '#fce4d6', skinDark = '#f0d0b8';
-  const uniformWhite = '#fafafa', uniformBlue = '#2c3e7b', uniformBlueDark = '#1a2870';
-  const ribbonRed = '#e84444', ribbonDark = '#cc3333';
-  const eyePurple = '#7b68ee', eyePurpleDark = '#3a2080';
+  // ─────── palette ───────
+  var C = {
+    skinL: '#fff7f2', skin: '#fce4d6', skinD: '#f2d0b8', skinS: '#fbe8d8',
+    hair0: '#2d1b4e', hair1: '#4a3070', hair2: '#6b4d96', hair3: '#8e6db8', hairG: '#a788d0',
+    eyeI: '#38bdf8', eyeM: '#0ea5e9', eyeD: '#0369a1', eyeB: '#e0f2fe',
+    lip: '#e89898', blush: 'rgba(248,140,140,0.48)',
+    dressW: '#f8f6fa', dressW2: '#efeaf4', dressN: '#2e3868', dressN2: '#3e4890',
+    ribbon: '#d43d3d', ribbonD: '#b03030', gold: '#e8c560',
+    shoe: '#3c2818', sole: '#5c3a28',
+    outline: '#3c2a4a'
+  };
+
+  var cx = w / 2;
+  var base = h * 0.56 + bobY;  // hip level anchor
 
   // ═══════════════════════════════════════════════
-  // 后侧长发 — 双马尾垂到腿部
+  // 1. FEET & LEGS
   // ═══════════════════════════════════════════════
-  ctx.fillStyle = hairPink;
-  // 左马尾
-  ctx.beginPath();
-  ctx.moveTo(cx - 56*s, baseY - 100*s);
-  ctx.quadraticCurveTo(cx - 90*s, baseY - 60*s, cx - 70*s, baseY + 20*s);
-  ctx.quadraticCurveTo(cx - 55*s, baseY + 60*s, cx - 45*s, baseY + 80*s);
-  ctx.lineTo(cx - 30*s, baseY - 40*s);
-  ctx.quadraticCurveTo(cx - 40*s, baseY - 80*s, cx - 45*s, baseY - 110*s);
-  ctx.closePath();
-  ctx.fill();
-  // 右马尾
-  ctx.beginPath();
-  ctx.moveTo(cx + 56*s, baseY - 100*s);
-  ctx.quadraticCurveTo(cx + 90*s, baseY - 60*s, cx + 70*s, baseY + 20*s);
-  ctx.quadraticCurveTo(cx + 55*s, baseY + 60*s, cx + 45*s, baseY + 80*s);
-  ctx.lineTo(cx + 30*s, baseY - 40*s);
-  ctx.quadraticCurveTo(cx + 40*s, baseY - 80*s, cx + 45*s, baseY - 110*s);
-  ctx.closePath();
-  ctx.fill();
+  var legL = base + 22*s, legR = base + 22*s;
 
-  // 发尾深色
-  ctx.fillStyle = hairDark;
+  // legs
+  ctx.fillStyle = C.skinS;
   ctx.beginPath();
-  ctx.moveTo(cx - 55*s, baseY + 50*s);
-  ctx.quadraticCurveTo(cx - 50*s, baseY + 70*s, cx - 45*s, baseY + 80*s);
-  ctx.lineTo(cx - 38*s, baseY - 20*s);
-  ctx.quadraticCurveTo(cx - 48*s, baseY + 30*s, cx - 55*s, baseY + 50*s);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(cx + 55*s, baseY + 50*s);
-  ctx.quadraticCurveTo(cx + 50*s, baseY + 70*s, cx + 45*s, baseY + 80*s);
-  ctx.lineTo(cx + 38*s, baseY - 20*s);
-  ctx.quadraticCurveTo(cx + 48*s, baseY + 30*s, cx + 55*s, baseY + 50*s);
-  ctx.fill();
-
-  // ═══════════════════════════════════════════════
-  // 腿部 + 袜子 + 鞋子
-  // ═══════════════════════════════════════════════
-  ctx.fillStyle = skinMid;
-  ctx.strokeStyle = '#e8c8b0';
-  ctx.lineWidth = 1 * s;
-  ctx.beginPath();
-  ctx.moveTo(cx - 18*s, baseY + 68*s);
-  ctx.lineTo(cx - 24*s, baseY + 115*s);
-  ctx.lineTo(cx - 8*s, baseY + 115*s);
-  ctx.lineTo(cx - 6*s, baseY + 68*s);
-  ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(cx + 6*s, baseY + 68*s);
-  ctx.lineTo(cx + 8*s, baseY + 115*s);
-  ctx.lineTo(cx + 24*s, baseY + 115*s);
-  ctx.lineTo(cx + 18*s, baseY + 68*s);
-  ctx.closePath(); ctx.fill(); ctx.stroke();
-
-  // 袜子
-  ctx.fillStyle = '#ffffff';
-  ctx.strokeStyle = '#e0e0e0';
-  ctx.beginPath();
-  ctx.moveTo(cx - 23*s, baseY + 100*s);
-  ctx.lineTo(cx - 24*s, baseY + 115*s);
-  ctx.lineTo(cx - 8*s, baseY + 115*s);
-  ctx.lineTo(cx - 7*s, baseY + 100*s);
-  ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(cx + 7*s, baseY + 100*s);
-  ctx.lineTo(cx + 8*s, baseY + 115*s);
-  ctx.lineTo(cx + 24*s, baseY + 115*s);
-  ctx.lineTo(cx + 23*s, baseY + 100*s);
-  ctx.closePath(); ctx.fill(); ctx.stroke();
-
-  // 鞋子
-  ctx.fillStyle = '#8b4513';
-  ctx.beginPath();
-  ctx.ellipse(cx - 16*s, baseY + 116*s, 12*s, 5*s, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(cx + 16*s, baseY + 116*s, 12*s, 5*s, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ═══════════════════════════════════════════════
-  // 上衣 — 水手服
-  // ═══════════════════════════════════════════════
-  // 领子
-  ctx.fillStyle = uniformBlue;
-  ctx.beginPath();
-  ctx.moveTo(cx - 50*s, baseY - 22*s);
-  ctx.lineTo(cx - 10*s, baseY + 14*s);
-  ctx.lineTo(cx + 10*s, baseY + 14*s);
-  ctx.lineTo(cx + 50*s, baseY - 22*s);
-  ctx.quadraticCurveTo(cx + 55*s, baseY - 28*s, cx + 50*s, baseY - 34*s);
-  ctx.lineTo(cx + 30*s, baseY - 26*s);
-  ctx.quadraticCurveTo(cx, baseY - 10*s, cx - 30*s, baseY - 26*s);
-  ctx.lineTo(cx - 50*s, baseY - 34*s);
-  ctx.quadraticCurveTo(cx - 55*s, baseY - 28*s, cx - 50*s, baseY - 22*s);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 1.5 * s;
-  ctx.stroke();
-
-  // 上衣白色主体
-  ctx.fillStyle = uniformWhite;
-  ctx.beginPath();
-  ctx.moveTo(cx - 36*s, baseY - 26*s);
-  ctx.quadraticCurveTo(cx - 48*s, baseY - 14*s, cx - 42*s, baseY + 30*s);
-  ctx.lineTo(cx + 42*s, baseY + 30*s);
-  ctx.quadraticCurveTo(cx + 48*s, baseY - 14*s, cx + 36*s, baseY - 26*s);
-  ctx.quadraticCurveTo(cx, baseY - 8*s, cx - 36*s, baseY - 26*s);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = '#d0d0d0';
-  ctx.lineWidth = 1 * s;
-  ctx.stroke();
-
-  // 红色领巾
-  ctx.fillStyle = ribbonRed;
-  ctx.beginPath();
-  ctx.moveTo(cx - 3*s, baseY - 14*s);
-  ctx.quadraticCurveTo(cx - 28*s, baseY + 4*s, cx - 34*s, baseY + 20*s);
-  ctx.quadraticCurveTo(cx - 18*s, baseY + 8*s, cx - 3*s, baseY - 4*s);
+  ctx.moveTo(cx - 14*s, base + 0*s);
+  ctx.lineTo(cx - 17*s, legL + 10*s);
+  ctx.lineTo(cx - 3*s, legL + 8*s);
+  ctx.lineTo(cx - 4*s, base + 0*s);
   ctx.closePath(); ctx.fill();
   ctx.beginPath();
-  ctx.moveTo(cx + 3*s, baseY - 14*s);
-  ctx.quadraticCurveTo(cx + 28*s, baseY + 4*s, cx + 34*s, baseY + 20*s);
-  ctx.quadraticCurveTo(cx + 18*s, baseY + 8*s, cx + 3*s, baseY - 4*s);
+  ctx.moveTo(cx + 4*s, base + 0*s);
+  ctx.lineTo(cx + 3*s, legR + 8*s);
+  ctx.lineTo(cx + 17*s, legR + 10*s);
+  ctx.lineTo(cx + 14*s, base + 0*s);
   ctx.closePath(); ctx.fill();
-  ctx.fillStyle = ribbonDark;
+
+  // socks (knee-high white)
+  ctx.fillStyle = '#fafafa';
   ctx.beginPath();
-  ctx.arc(cx, baseY - 16*s, 5*s, 0, Math.PI * 2);
+  ctx.moveTo(cx - 16*s, legL - 6*s);
+  ctx.lineTo(cx - 17*s, legL + 10*s);
+  ctx.lineTo(cx - 3*s, legL + 8*s);
+  ctx.lineTo(cx - 3*s, legL - 6*s);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(cx + 3*s, legR - 6*s);
+  ctx.lineTo(cx + 3*s, legR + 8*s);
+  ctx.lineTo(cx + 17*s, legR + 10*s);
+  ctx.lineTo(cx + 16*s, legR - 6*s);
+  ctx.closePath(); ctx.fill();
+
+  // mary jane shoes
+  ctx.fillStyle = C.shoe;
+  ctx.beginPath();
+  ctx.ellipse(cx - 14*s, legL + 12*s, 11*s, 5.5*s, 0, Math.PI, Math.PI * 2);
   ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(cx + 14*s, legR + 12*s, 11*s, 5.5*s, 0, Math.PI, Math.PI * 2);
+  ctx.fill();
+  // soles
+  ctx.fillStyle = C.sole;
+  ctx.roundRect(cx - 23*s, legL + 15*s, 18*s, 3*s, 1.5*s); ctx.fill();
+  ctx.roundRect(cx + 5*s, legR + 15*s, 18*s, 3*s, 1.5*s); ctx.fill();
 
   // ═══════════════════════════════════════════════
-  // 百褶裙
+  // 2. SKIRT (pleated, deep navy)
   // ═══════════════════════════════════════════════
-  ctx.fillStyle = uniformBlue;
+  var skirtY = base - 4*s;
+  ctx.fillStyle = C.dressN;
   ctx.beginPath();
-  ctx.moveTo(cx - 42*s, baseY + 30*s);
-  ctx.lineTo(cx - 52*s, baseY + 68*s);
-  ctx.quadraticCurveTo(cx - 30*s, baseY + 72*s, cx, baseY + 70*s);
-  ctx.quadraticCurveTo(cx + 30*s, baseY + 72*s, cx + 52*s, baseY + 68*s);
-  ctx.lineTo(cx + 42*s, baseY + 30*s);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = uniformBlueDark;
-  ctx.lineWidth = 1 * s;
-  ctx.stroke();
+  ctx.moveTo(cx - 28*s, skirtY);
+  ctx.lineTo(cx - 42*s, skirtY + 26*s);
+  ctx.quadraticCurveTo(cx - 20*s, skirtY + 32*s, cx, skirtY + 30*s);
+  ctx.quadraticCurveTo(cx + 20*s, skirtY + 32*s, cx + 42*s, skirtY + 26*s);
+  ctx.lineTo(cx + 28*s, skirtY);
+  ctx.closePath(); ctx.fill();
 
-  ctx.strokeStyle = '#3449a0';
-  ctx.lineWidth = 0.6 * s;
-  for (let i = -3; i <= 3; i++) {
+  // skirt pleats
+  ctx.strokeStyle = C.dressN2;
+  ctx.lineWidth = 0.7 * s;
+  for (var i = -3; i <= 3; i++) {
     ctx.beginPath();
-    ctx.moveTo(cx + i * 10*s, baseY + 32*s);
-    ctx.lineTo(cx + i * 14*s, baseY + 68*s);
+    ctx.moveTo(cx + i * 8*s, skirtY + 2*s);
+    ctx.lineTo(cx + i * 12*s, skirtY + 27*s);
+    ctx.stroke();
+  }
+  // waist band
+  ctx.fillStyle = C.dressN2;
+  ctx.roundRect(cx - 28*s, skirtY - 3*s, 56*s, 7*s, 1.5*s); ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 3. TORSO (white blouse)
+  // ═══════════════════════════════════════════════
+  var bodyTop = base - 30*s;
+  ctx.fillStyle = C.dressW;
+  ctx.beginPath();
+  ctx.moveTo(cx - 22*s, bodyTop);
+  ctx.quadraticCurveTo(cx - 28*s, base - 8*s, cx - 26*s, skirtY - 2*s);
+  ctx.lineTo(cx + 26*s, skirtY - 2*s);
+  ctx.quadraticCurveTo(cx + 28*s, base - 8*s, cx + 22*s, bodyTop);
+  ctx.quadraticCurveTo(cx, bodyTop - 6*s, cx - 22*s, bodyTop);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#d8d4e0';
+  ctx.lineWidth = 0.6 * s;
+  ctx.stroke();
+
+  // collar bow (gold ribbon)
+  ctx.fillStyle = C.gold;
+  ctx.beginPath();
+  ctx.moveTo(cx - 12*s, bodyTop + 2*s);
+  ctx.quadraticCurveTo(cx - 20*s, bodyTop + 10*s, cx - 14*s, bodyTop + 18*s);
+  ctx.quadraticCurveTo(cx - 4*s, bodyTop + 8*s, cx, bodyTop + 4*s);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(cx + 12*s, bodyTop + 2*s);
+  ctx.quadraticCurveTo(cx + 20*s, bodyTop + 10*s, cx + 14*s, bodyTop + 18*s);
+  ctx.quadraticCurveTo(cx + 4*s, bodyTop + 8*s, cx, bodyTop + 4*s);
+  ctx.closePath(); ctx.fill();
+  // bow center
+  ctx.fillStyle = C.ribbon;
+  ctx.beginPath();
+  ctx.arc(cx, bodyTop + 4*s, 4*s, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 4. ARMS + HANDS (relaxed at sides, slight sway)
+  // ═══════════════════════════════════════════════
+  var armOsc = Math.cos(frame * 0.035) * 4 * s;
+
+  // sleeves (puffy short)
+  ctx.fillStyle = C.dressW2;
+  ctx.beginPath();
+  ctx.ellipse(cx - 30*s, bodyTop + 4*s, 10*s, 11*s, -0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(cx + 30*s, bodyTop + 4*s, 10*s, 11*s, 0.2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // lower arms
+  ctx.fillStyle = C.skinS;
+  var elY = bodyTop + 16*s;
+  ctx.beginPath();
+  ctx.moveTo(cx - 32*s, elY - 4*s);
+  ctx.lineTo(cx - 36*s + armOsc, elY + 16*s);
+  ctx.lineTo(cx - 26*s + armOsc, elY + 16*s);
+  ctx.lineTo(cx - 24*s, elY - 4*s);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(cx + 32*s, elY - 4*s);
+  ctx.lineTo(cx + 36*s - armOsc, elY + 16*s);
+  ctx.lineTo(cx + 26*s - armOsc, elY + 16*s);
+  ctx.lineTo(cx + 24*s, elY - 4*s);
+  ctx.closePath(); ctx.fill();
+
+  // hands (small cute)
+  ctx.fillStyle = C.skinS;
+  ctx.beginPath();
+  ctx.arc(cx - 31*s + armOsc*0.7, elY + 21*s, 7*s, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx + 31*s - armOsc*0.7, elY + 21*s, 7*s, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 5. NECK
+  // ═══════════════════════════════════════════════
+  ctx.fillStyle = C.skinS;
+  ctx.beginPath();
+  ctx.moveTo(cx - 8*s, bodyTop - 4*s);
+  ctx.lineTo(cx - 7*s, bodyTop - 18*s);
+  ctx.lineTo(cx + 7*s, bodyTop - 18*s);
+  ctx.lineTo(cx + 8*s, bodyTop - 4*s);
+  ctx.closePath(); ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 6. HEAD — chibi proportions (big head!)
+  // ═══════════════════════════════════════════════
+  var hy = bodyTop - 18*s - 40*s;  // head center
+  var hw = 78*s, hh = 80*s;        // wide chibi face
+
+  // face shadow base
+  ctx.fillStyle = 'rgba(0,0,0,0.04)';
+  ctx.beginPath();
+  ctx.ellipse(cx + 2*s, hy + 2*s, hw*0.46, hh*0.46, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // face gradient
+  var faceGrad = ctx.createRadialGradient(cx - 8*s, hy - 12*s, hw*0.04, cx, hy, hw*0.47);
+  faceGrad.addColorStop(0, C.skinL);
+  faceGrad.addColorStop(0.6, C.skin);
+  faceGrad.addColorStop(1, C.skinD);
+  ctx.fillStyle = faceGrad;
+  ctx.beginPath();
+  ctx.ellipse(cx, hy, hw*0.46, hh*0.46, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ears
+  ctx.fillStyle = C.skinD;
+  ctx.beginPath();
+  ctx.ellipse(cx - hw*0.46, hy - 2*s, 5*s, 8*s, -0.25, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(cx + hw*0.46, hy - 2*s, 5*s, 8*s, 0.25, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 7. HAIR — back layer (long flowing)
+  // ═══════════════════════════════════════════════
+  // back hair flows down to waist
+  var hairGrad = ctx.createLinearGradient(cx, hy - hh*0.55, cx, hy + hh*0.5);
+  hairGrad.addColorStop(0, C.hair0);
+  hairGrad.addColorStop(0.25, C.hair1);
+  hairGrad.addColorStop(0.55, C.hair2);
+  hairGrad.addColorStop(1, C.hair3);
+  ctx.fillStyle = hairGrad;
+
+  ctx.beginPath();
+  ctx.moveTo(cx - hw*0.48, hy - hh*0.22);
+  ctx.quadraticCurveTo(cx - hw*0.68, hy - 5*s, cx - hw*0.45, hy + hh*0.25);
+  ctx.quadraticCurveTo(cx - hw*0.25, hy + hh*0.4, cx - 4*s, hy + hh*0.45);
+  ctx.quadraticCurveTo(cx + 4*s, hy + hh*0.45, cx + hw*0.25, hy + hh*0.4);
+  ctx.quadraticCurveTo(cx + hw*0.68, hy - 5*s, cx + hw*0.48, hy - hh*0.22);
+  ctx.quadraticCurveTo(cx + hw*0.45, hy - hh*0.48, cx + hw*0.2, hy - hh*0.52);
+  ctx.quadraticCurveTo(cx, hy - hh*0.56, cx - hw*0.2, hy - hh*0.52);
+  ctx.quadraticCurveTo(cx - hw*0.45, hy - hh*0.48, cx - hw*0.48, hy - hh*0.22);
+  ctx.closePath();
+  ctx.fill();
+
+  // hair tips (gradient to lighter)
+  ctx.fillStyle = C.hair3;
+  ctx.beginPath();
+  ctx.moveTo(cx - hw*0.28, hy + hh*0.33);
+  ctx.quadraticCurveTo(cx - hw*0.15, hy + hh*0.42, cx, hy + hh*0.43);
+  ctx.quadraticCurveTo(cx + hw*0.15, hy + hh*0.42, cx + hw*0.28, hy + hh*0.33);
+  ctx.quadraticCurveTo(cx, hy + hh*0.38, cx - hw*0.28, hy + hh*0.33);
+  ctx.closePath(); ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 8. HAIR — front bangs (layered, detailed)
+  // ═══════════════════════════════════════════════
+  ctx.fillStyle = C.hair0;
+  ctx.beginPath();
+  ctx.moveTo(cx - hw*0.48, hy - hh*0.24);
+  ctx.quadraticCurveTo(cx - hw*0.54, hy - hh*0.5, cx - hw*0.22, hy - hh*0.54);
+  ctx.quadraticCurveTo(cx - 3*s, hy - hh*0.58, cx, hy - hh*0.32);
+  ctx.quadraticCurveTo(cx + 3*s, hy - hh*0.58, cx + hw*0.22, hy - hh*0.54);
+  ctx.quadraticCurveTo(cx + hw*0.54, hy - hh*0.5, cx + hw*0.48, hy - hh*0.24);
+  ctx.quadraticCurveTo(cx + hw*0.36, hy - hh*0.3, cx + hw*0.16, hy - hh*0.14);
+  ctx.quadraticCurveTo(cx, hy - hh*0.18, cx - hw*0.16, hy - hh*0.14);
+  ctx.quadraticCurveTo(cx - hw*0.36, hy - hh*0.3, cx - hw*0.48, hy - hh*0.24);
+  ctx.closePath();
+  ctx.fill();
+
+  // bang strands (thin lines for hair detail)
+  ctx.strokeStyle = C.hair2;
+  ctx.lineWidth = 0.6 * s;
+  for (var bi = -2; bi <= 2; bi++) {
+    ctx.beginPath();
+    ctx.moveTo(cx + bi*14*s, hy - hh*0.5);
+    ctx.quadraticCurveTo(cx + bi*12*s, hy - hh*0.25, cx + bi*10*s, hy - hh*0.08);
     ctx.stroke();
   }
 
-  // ═══════════════════════════════════════════════
-  // 手臂 + 袖子
-  // ═══════════════════════════════════════════════
-  const armWL = Math.sin(animFrame * 0.04) * 5 * s;
-  const armWR = Math.cos(animFrame * 0.04) * 5 * s;
-
-  ctx.fillStyle = uniformWhite;
-  ctx.strokeStyle = '#d0d0d0';
-  ctx.lineWidth = 1 * s;
-  // 左袖
+  // side bangs (framing face)
+  ctx.fillStyle = C.hair1;
   ctx.beginPath();
-  ctx.moveTo(cx - 38*s, baseY - 18*s);
-  ctx.quadraticCurveTo(cx - 58*s, baseY - 12*s, cx - 62*s, baseY + 6*s + armWL);
-  ctx.quadraticCurveTo(cx - 54*s, baseY + 16*s + armWL, cx - 44*s, baseY + 10*s);
-  ctx.quadraticCurveTo(cx - 36*s, baseY + 4*s, cx - 34*s, baseY - 8*s);
-  ctx.closePath(); ctx.fill(); ctx.stroke();
-  // 右袖
-  ctx.beginPath();
-  ctx.moveTo(cx + 38*s, baseY - 18*s);
-  ctx.quadraticCurveTo(cx + 58*s, baseY - 12*s, cx + 62*s, baseY + 6*s + armWR);
-  ctx.quadraticCurveTo(cx + 54*s, baseY + 16*s + armWR, cx + 44*s, baseY + 10*s);
-  ctx.quadraticCurveTo(cx + 36*s, baseY + 4*s, cx + 34*s, baseY - 8*s);
-  ctx.closePath(); ctx.fill(); ctx.stroke();
-
-  // 手
-  ctx.fillStyle = skinMid;
-  ctx.beginPath();
-  ctx.arc(cx - 55*s, baseY + 12*s + armWL, 8*s, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(cx + 55*s, baseY + 12*s + armWR, 8*s, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ═══════════════════════════════════════════════
-  // 头部 — 脸部
-  // ═══════════════════════════════════════════════
-  const hx = cx, hy = baseY - 90*s, hw = 78*s, hh = 82*s;
-
-  // 脸颊阴影
-  ctx.fillStyle = 'rgba(0,0,0,0.06)';
-  ctx.beginPath();
-  ctx.ellipse(hx + 2*s, hy + 2*s, hw*0.48, hh*0.48, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // 脸部
-  const skinGrad = ctx.createRadialGradient(hx - 6*s, hy - 8*s, hw*0.05, hx, hy, hw*0.48);
-  skinGrad.addColorStop(0, skinLight);
-  skinGrad.addColorStop(0.7, skinMid);
-  skinGrad.addColorStop(1, skinDark);
-  ctx.fillStyle = skinGrad;
-  ctx.beginPath();
-  ctx.ellipse(hx, hy, hw*0.48, hh*0.48, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // 耳朵
-  ctx.fillStyle = '#fae0cc';
-  ctx.beginPath();
-  ctx.ellipse(hx - hw*0.48, hy, 6*s, 10*s, -0.2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(hx + hw*0.48, hy, 6*s, 10*s, 0.2, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ═══════════════════════════════════════════════
-  // 前发 — 刘海 + 侧发
-  // ═══════════════════════════════════════════════
-  ctx.fillStyle = hairPink;
-  ctx.beginPath();
-  ctx.moveTo(hx - hw*0.5, hy - hh*0.2);
-  ctx.quadraticCurveTo(hx - hw*0.55, hy - hh*0.45, hx - hw*0.2, hy - hh*0.5);
-  ctx.quadraticCurveTo(hx, hy - hh*0.55, hx + hw*0.2, hy - hh*0.5);
-  ctx.quadraticCurveTo(hx + hw*0.55, hy - hh*0.45, hx + hw*0.5, hy - hh*0.2);
-  ctx.quadraticCurveTo(hx + hw*0.45, hy - hh*0.35, hx + hw*0.3, hy - hh*0.15);
-  ctx.quadraticCurveTo(hx + hw*0.1, hy - hh*0.25, hx, hy - hh*0.18);
-  ctx.quadraticCurveTo(hx - hw*0.1, hy - hh*0.25, hx - hw*0.3, hy - hh*0.15);
-  ctx.quadraticCurveTo(hx - hw*0.45, hy - hh*0.35, hx - hw*0.5, hy - hh*0.2);
-  ctx.closePath();
-  ctx.fill();
-
-  // 刘海高光
-  ctx.fillStyle = '#fccdd8';
-  ctx.beginPath();
-  ctx.ellipse(hx - 12*s, hy - hh*0.4, 16*s, 6*s, -0.2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(hx + 10*s, hy - hh*0.42, 14*s, 5*s, 0.15, 0, Math.PI * 2);
-  ctx.fill();
-
-  // 侧发
-  ctx.fillStyle = hairPink;
-  ctx.beginPath();
-  ctx.moveTo(hx - hw*0.4, hy - hh*0.15);
-  ctx.quadraticCurveTo(hx - hw*0.7, hy - hh*0.1, hx - hw*0.6, hy + hh*0.1);
-  ctx.quadraticCurveTo(hx - hw*0.45, hy + hh*0.25, hx - hw*0.3, hy + hh*0.1);
-  ctx.quadraticCurveTo(hx - hw*0.38, hy - hh*0.05, hx - hw*0.4, hy - hh*0.15);
+  ctx.moveTo(cx - hw*0.38, hy - hh*0.15);
+  ctx.quadraticCurveTo(cx - hw*0.62, hy - 2*s, cx - hw*0.52, hy + hh*0.22);
+  ctx.quadraticCurveTo(cx - hw*0.38, hy + hh*0.38, cx - hw*0.2, hy + hh*0.15);
+  ctx.quadraticCurveTo(cx - hw*0.32, hy, cx - hw*0.38, hy - hh*0.15);
   ctx.closePath(); ctx.fill();
   ctx.beginPath();
-  ctx.moveTo(hx + hw*0.4, hy - hh*0.15);
-  ctx.quadraticCurveTo(hx + hw*0.7, hy - hh*0.1, hx + hw*0.6, hy + hh*0.1);
-  ctx.quadraticCurveTo(hx + hw*0.45, hy + hh*0.25, hx + hw*0.3, hy + hh*0.1);
-  ctx.quadraticCurveTo(hx + hw*0.38, hy - hh*0.05, hx + hw*0.4, hy - hh*0.15);
+  ctx.moveTo(cx + hw*0.38, hy - hh*0.15);
+  ctx.quadraticCurveTo(cx + hw*0.62, hy - 2*s, cx + hw*0.52, hy + hh*0.22);
+  ctx.quadraticCurveTo(cx + hw*0.38, hy + hh*0.38, cx + hw*0.2, hy + hh*0.15);
+  ctx.quadraticCurveTo(cx + hw*0.32, hy, cx + hw*0.38, hy - hh*0.15);
   ctx.closePath(); ctx.fill();
 
-  // ═══════════════════════════════════════════════
-  // 眼睛 — 日系动漫大眼
-  // ═══════════════════════════════════════════════
-  const eyeY = hy - 6*s, eyeSp = 22*s, eyeW = 20*s;
-  const eyeH = isBlinking ? 1.5*s : 24*s;
-
-  // 睫毛线
-  ctx.strokeStyle = '#3a2520';
-  ctx.lineWidth = 2 * s;
-  ctx.lineCap = 'round';
+  // hair shine highlight
+  ctx.fillStyle = 'rgba(180,140,220,0.22)';
   ctx.beginPath();
-  ctx.moveTo(hx - eyeSp - eyeW, eyeY - 2*s);
-  ctx.quadraticCurveTo(hx - eyeSp, eyeY - eyeH*0.6, hx - eyeSp + eyeW, eyeY - 2*s);
-  ctx.stroke();
+  ctx.ellipse(cx - 12*s, hy - hh*0.43, 15*s, 5*s, -0.2, 0, Math.PI * 2);
+  ctx.fill();
   ctx.beginPath();
-  ctx.moveTo(hx + eyeSp - eyeW, eyeY - 2*s);
-  ctx.quadraticCurveTo(hx + eyeSp, eyeY - eyeH*0.6, hx + eyeSp + eyeW, eyeY - 2*s);
-  ctx.stroke();
+  ctx.ellipse(cx + 10*s, hy - hh*0.45, 13*s, 4*s, 0.15, 0, Math.PI * 2);
+  ctx.fill();
 
-  if (!isBlinking) {
-    // 眼白
-    ctx.fillStyle = '#ffffff';
+  // front hair highlight streak
+  ctx.fillStyle = 'rgba(210,180,240,0.3)';
+  ctx.beginPath();
+  ctx.ellipse(cx - 6*s, hy - hh*0.46, 10*s, 3*s, -0.05, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 9. HAIR ACCESSORY — twin side ribbons
+  // ═══════════════════════════════════════════════
+  function drawRibbon(rx, ry, dir) {
+    ctx.fillStyle = C.ribbon;
     ctx.beginPath();
-    ctx.ellipse(hx - eyeSp, eyeY, eyeW, eyeH*0.5, 0, 0, Math.PI * 2);
+    ctx.ellipse(rx - dir*10*s, ry, 11*s, 7*s, dir*0.3, 0, Math.PI * 2);
     ctx.fill();
     ctx.beginPath();
-    ctx.ellipse(hx + eyeSp, eyeY, eyeW, eyeH*0.5, 0, 0, Math.PI * 2);
+    ctx.ellipse(rx + dir*10*s, ry, 11*s, 7*s, dir*0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = C.ribbonD;
+    ctx.beginPath();
+    ctx.arc(rx, ry, 4*s, 0, Math.PI * 2);
+    ctx.fill();
+    // tails
+    ctx.fillStyle = C.ribbon;
+    ctx.beginPath();
+    ctx.moveTo(rx - dir*3*s, ry + 2*s);
+    ctx.quadraticCurveTo(rx - dir*12*s, ry + 16*s, rx - dir*6*s, ry + 22*s);
+    ctx.quadraticCurveTo(rx - dir*1*s, ry + 10*s, rx - dir*3*s, ry + 2*s);
+    ctx.fill();
+  }
+  drawRibbon(cx - hw*0.42, hy - hh*0.32, -1);
+  drawRibbon(cx + hw*0.42, hy - hh*0.32, 1);
+
+  // ═══════════════════════════════════════════════
+  // 10. EYES — big sparkly anime eyes
+  // ═══════════════════════════════════════════════
+  var eY = hy - 8*s, eSp = 21*s, eW = 20*s, eH = blinking ? 1.8*s : 25*s;
+
+  if (!blinking) {
+    // ── LEFT EYE ──
+
+    // sclera
+    ctx.fillStyle = '#fefefe';
+    ctx.beginPath();
+    ctx.ellipse(cx - eSp, eY, eW, eH*0.52, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // 虹膜 (渐变紫色)
-    const irisL = ctx.createRadialGradient(hx - eyeSp, eyeY + 3*s, eyeW*0.1, hx - eyeSp, eyeY + 3*s, eyeW*0.55);
-    irisL.addColorStop(0, eyePurple);
-    irisL.addColorStop(0.5, '#5b3fc0');
-    irisL.addColorStop(1, eyePurpleDark);
+    // iris gradient
+    var irisL = ctx.createRadialGradient(cx - eSp + 1*s, eY + 3*s, eW*0.08, cx - eSp, eY + 3*s, eW*0.52);
+    irisL.addColorStop(0, C.eyeI);
+    irisL.addColorStop(0.35, C.eyeM);
+    irisL.addColorStop(0.75, C.eyeD);
+    irisL.addColorStop(1, '#012d5a');
     ctx.fillStyle = irisL;
     ctx.beginPath();
-    ctx.ellipse(hx - eyeSp, eyeY + 3*s, eyeW*0.55, eyeH*0.35, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx - eSp, eY + 3*s, eW*0.5, eH*0.34, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    const irisR = ctx.createRadialGradient(hx + eyeSp, eyeY + 3*s, eyeW*0.1, hx + eyeSp, eyeY + 3*s, eyeW*0.55);
-    irisR.addColorStop(0, eyePurple);
-    irisR.addColorStop(0.5, '#5b3fc0');
-    irisR.addColorStop(1, eyePurpleDark);
-    ctx.fillStyle = irisR;
+    // pupil
+    ctx.fillStyle = '#0a0a1a';
     ctx.beginPath();
-    ctx.ellipse(hx + eyeSp, eyeY + 3*s, eyeW*0.55, eyeH*0.35, 0, 0, Math.PI * 2);
+    ctx.arc(cx - eSp + 1*s, eY + 3*s, eW*0.14, 0, Math.PI * 2);
     ctx.fill();
 
-    // 瞳孔
-    const pupilOffX = Math.sin(animFrame * 0.04) * 1.5*s;
-    ctx.fillStyle = '#1a1040';
-    ctx.beginPath();
-    ctx.arc(hx - eyeSp + pupilOffX, eyeY + 3*s, eyeW*0.18, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(hx + eyeSp + pupilOffX, eyeY + 3*s, eyeW*0.18, 0, Math.PI * 2);
-    ctx.fill();
-
-    // 主高光
+    // highlight 1 (big)
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
-    ctx.arc(hx - eyeSp - 3*s, eyeY - 7*s, 5*s, 0, Math.PI * 2);
+    ctx.arc(cx - eSp - 3*s, eY - 8*s, 5*s, 0, Math.PI * 2);
+    ctx.fill();
+    // highlight 2 (small, inside iris)
+    ctx.beginPath();
+    ctx.arc(cx - eSp + 5*s, eY + 0*s, 2.5*s, 0, Math.PI * 2);
+    ctx.fill();
+    // highlight 3 (tiny sparkle)
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.beginPath();
+    ctx.arc(cx - eSp - 1*s, eY - 3*s, 1.8*s, 0, Math.PI * 2);
+    ctx.fill();
+    // highlight 4 (bottom reflection)
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.arc(cx - eSp - 2*s, eY + 9*s, 2.5*s, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ── RIGHT EYE ──
+    ctx.fillStyle = '#fefefe';
+    ctx.beginPath();
+    ctx.ellipse(cx + eSp, eY, eW, eH*0.52, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    var irisR = ctx.createRadialGradient(cx + eSp + 1*s, eY + 3*s, eW*0.08, cx + eSp, eY + 3*s, eW*0.52);
+    irisR.addColorStop(0, C.eyeI);
+    irisR.addColorStop(0.35, C.eyeM);
+    irisR.addColorStop(0.75, C.eyeD);
+    irisR.addColorStop(1, '#012d5a');
+    ctx.fillStyle = irisR;
+    ctx.beginPath();
+    ctx.ellipse(cx + eSp, eY + 3*s, eW*0.5, eH*0.34, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#0a0a1a';
+    ctx.beginPath();
+    ctx.arc(cx + eSp + 1*s, eY + 3*s, eW*0.14, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(cx + eSp - 3*s, eY - 8*s, 5*s, 0, Math.PI * 2);
     ctx.fill();
     ctx.beginPath();
-    ctx.arc(hx + eyeSp - 3*s, eyeY - 7*s, 5*s, 0, Math.PI * 2);
+    ctx.arc(cx + eSp + 5*s, eY + 0*s, 2.5*s, 0, Math.PI * 2);
     ctx.fill();
-    // 次高光
-    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
     ctx.beginPath();
-    ctx.arc(hx - eyeSp + 6*s, eyeY - 2*s, 2.5*s, 0, Math.PI * 2);
+    ctx.arc(cx + eSp - 1*s, eY - 3*s, 1.8*s, 0, Math.PI * 2);
     ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
     ctx.beginPath();
-    ctx.arc(hx + eyeSp + 6*s, eyeY - 2*s, 2.5*s, 0, Math.PI * 2);
+    ctx.arc(cx + eSp - 2*s, eY + 9*s, 2.5*s, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // 眉毛
-  ctx.strokeStyle = '#5a4030';
-  ctx.lineWidth = 1.8 * s;
-  ctx.beginPath();
-  ctx.moveTo(hx - eyeSp - eyeW*0.6, eyeY - eyeH*0.55);
-  ctx.quadraticCurveTo(hx - eyeSp, eyeY - eyeH*0.7, hx - eyeSp + eyeW*0.4, eyeY - eyeH*0.55);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(hx + eyeSp + eyeW*0.6, eyeY - eyeH*0.55);
-  ctx.quadraticCurveTo(hx + eyeSp, eyeY - eyeH*0.7, hx + eyeSp - eyeW*0.4, eyeY - eyeH*0.55);
-  ctx.stroke();
-
-  // ═══════════════════════════════════════════════
-  // 鼻子 + 嘴巴
-  // ═══════════════════════════════════════════════
-  ctx.fillStyle = '#e8c0a0';
-  ctx.beginPath();
-  ctx.arc(hx, hy + 6*s, 2.5*s, 0, Math.PI * 2);
-  ctx.fill();
-
-  // W 形可爱嘴
-  ctx.strokeStyle = '#d47878';
-  ctx.lineWidth = 1.5 * s;
+  // ── EYELASHES ──
+  ctx.strokeStyle = C.outline;
+  ctx.lineWidth = 2.2 * s;
   ctx.lineCap = 'round';
   ctx.beginPath();
-  ctx.moveTo(hx - 8*s, hy + 16*s);
-  ctx.quadraticCurveTo(hx - 3*s, hy + 18*s, hx, hy + 15*s);
-  ctx.quadraticCurveTo(hx + 3*s, hy + 18*s, hx + 8*s, hy + 16*s);
+  ctx.moveTo(cx - eSp - eW*0.75, eY - 2*s);
+  ctx.quadraticCurveTo(cx - eSp, eY - eH*0.6, cx - eSp + eW*0.75, eY - 2*s);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx + eSp - eW*0.75, eY - 2*s);
+  ctx.quadraticCurveTo(cx + eSp, eY - eH*0.6, cx + eSp + eW*0.75, eY - 2*s);
+  ctx.stroke();
+
+  // lower lashes (subtle)
+  ctx.strokeStyle = C.outline;
+  ctx.lineWidth = 0.6 * s;
+  ctx.beginPath();
+  ctx.moveTo(cx - eSp - eW*0.35, eY + eH*0.38);
+  ctx.quadraticCurveTo(cx - eSp, eY + eH*0.42, cx - eSp + eW*0.35, eY + eH*0.38);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx + eSp - eW*0.35, eY + eH*0.38);
+  ctx.quadraticCurveTo(cx + eSp, eY + eH*0.42, cx + eSp + eW*0.35, eY + eH*0.38);
+  ctx.stroke();
+
+  // ── EYEBROWS (gentle arch) ──
+  ctx.strokeStyle = C.hair0;
+  ctx.lineWidth = 1.6 * s;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx - eSp - eW*0.5, eY - eH*0.52);
+  ctx.quadraticCurveTo(cx - eSp, eY - eH*0.62, cx - eSp + eW*0.35, eY - eH*0.52);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx + eSp + eW*0.5, eY - eH*0.52);
+  ctx.quadraticCurveTo(cx + eSp, eY - eH*0.62, cx + eSp - eW*0.35, eY - eH*0.52);
   ctx.stroke();
 
   // ═══════════════════════════════════════════════
-  // 腮红
+  // 11. NOSE + MOUTH
   // ═══════════════════════════════════════════════
-  const blushGradL = ctx.createRadialGradient(hx - eyeSp - 6*s, hy + 10*s, 1*s, hx - eyeSp - 6*s, hy + 10*s, 13*s);
-  blushGradL.addColorStop(0, 'rgba(255, 150, 150, 0.45)');
-  blushGradL.addColorStop(1, 'rgba(255, 150, 150, 0)');
-  ctx.fillStyle = blushGradL;
+  ctx.fillStyle = '#ecc8a8';
   ctx.beginPath();
-  ctx.ellipse(hx - eyeSp - 6*s, hy + 10*s, 12*s, 7*s, 0, 0, Math.PI * 2);
+  ctx.arc(cx, hy + 8*s, 1.8*s, 0, Math.PI * 2);
   ctx.fill();
 
-  const blushGradR = ctx.createRadialGradient(hx + eyeSp + 6*s, hy + 10*s, 1*s, hx + eyeSp + 6*s, hy + 10*s, 13*s);
-  blushGradR.addColorStop(0, 'rgba(255, 150, 150, 0.45)');
-  blushGradR.addColorStop(1, 'rgba(255, 150, 150, 0)');
-  ctx.fillStyle = blushGradR;
+  // cute open smile
+  ctx.fillStyle = '#d45858';
   ctx.beginPath();
-  ctx.ellipse(hx + eyeSp + 6*s, hy + 10*s, 12*s, 7*s, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ═══════════════════════════════════════════════
-  // 粉色蝴蝶结发饰
-  // ═══════════════════════════════════════════════
-  const bx = hx + hw*0.35, by = hy - hh*0.32;
-  ctx.fillStyle = '#ff6b8a';
+  ctx.moveTo(cx - 6*s, hy + 17*s);
+  ctx.quadraticCurveTo(cx, hy + 22*s, cx + 6*s, hy + 17*s);
+  ctx.quadraticCurveTo(cx, hy + 19*s, cx - 6*s, hy + 17*s);
+  ctx.closePath(); ctx.fill();
+  // inner mouth
+  ctx.fillStyle = '#8a2020';
   ctx.beginPath();
-  ctx.ellipse(bx - 12*s, by, 13*s, 8*s, -0.3, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(bx + 12*s, by, 13*s, 8*s, 0.3, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#ff4060';
-  ctx.beginPath();
-  ctx.arc(bx, by, 5*s, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#ff6b8a';
-  ctx.beginPath();
-  ctx.moveTo(bx - 4*s, by + 3*s);
-  ctx.quadraticCurveTo(bx - 14*s, by + 18*s, bx - 8*s, by + 24*s);
-  ctx.quadraticCurveTo(bx - 2*s, by + 12*s, bx - 4*s, by + 3*s);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(bx + 4*s, by + 3*s);
-  ctx.quadraticCurveTo(bx + 14*s, by + 18*s, bx + 8*s, by + 24*s);
-  ctx.quadraticCurveTo(bx + 2*s, by + 12*s, bx + 4*s, by + 3*s);
+  ctx.ellipse(cx, hy + 19.5*s, 3.5*s, 1.5*s, 0, 0, Math.PI * 2);
   ctx.fill();
 
   // ═══════════════════════════════════════════════
-  // 颈部
+  // 12. BLUSH
   // ═══════════════════════════════════════════════
-  ctx.fillStyle = '#fae0cc';
+  var bl = ctx.createRadialGradient(cx - eSp - 2*s, hy + 10*s, 1*s, cx - eSp - 2*s, hy + 10*s, 13*s);
+  bl.addColorStop(0, C.blush);
+  bl.addColorStop(1, 'rgba(248,140,140,0)');
+  ctx.fillStyle = bl;
   ctx.beginPath();
-  ctx.moveTo(hx - 10*s, hy + hh*0.42);
-  ctx.lineTo(hx - 8*s, baseY - 50*s);
-  ctx.lineTo(hx + 8*s, baseY - 50*s);
-  ctx.lineTo(hx + 10*s, hy + hh*0.42);
-  ctx.closePath();
+  ctx.ellipse(cx - eSp - 2*s, hy + 10*s, 12*s, 6.5*s, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  var br = ctx.createRadialGradient(cx + eSp + 2*s, hy + 10*s, 1*s, cx + eSp + 2*s, hy + 10*s, 13*s);
+  br.addColorStop(0, C.blush);
+  br.addColorStop(1, 'rgba(248,140,140,0)');
+  ctx.fillStyle = br;
+  ctx.beginPath();
+  ctx.ellipse(cx + eSp + 2*s, hy + 10*s, 12*s, 6.5*s, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 13. CROWN / HEADPIECE (tiny gold crown)
+  // ═══════════════════════════════════════════════
+  var crY = hy - hh*0.5 - 2*s;
+  ctx.fillStyle = C.gold;
+  // base
+  ctx.roundRect(cx - 10*s, crY, 20*s, 5*s, 2*s); ctx.fill();
+  // points
+  ctx.beginPath();
+  ctx.moveTo(cx - 8*s, crY);
+  ctx.lineTo(cx - 5*s, crY - 10*s);
+  ctx.lineTo(cx - 2*s, crY - 3*s);
+  ctx.lineTo(cx, crY - 12*s);
+  ctx.lineTo(cx + 2*s, crY - 3*s);
+  ctx.lineTo(cx + 5*s, crY - 10*s);
+  ctx.lineTo(cx + 8*s, crY);
+  ctx.closePath(); ctx.fill();
+  // gem
+  ctx.fillStyle = '#ff6090';
+  ctx.beginPath();
+  ctx.arc(cx, crY - 6*s, 2.5*s, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.beginPath();
+  ctx.arc(cx - 1*s, crY - 7*s, 1*s, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.restore();
@@ -578,24 +621,22 @@ function drawCanvasPet() {
   }
 }
 
-// ── 动画循环 ──
+// ── Animation loop ──
 function animateLoop() {
   if (mode === 'canvas') drawCanvasPet();
   requestAnimationFrame(animateLoop);
 }
 
-// ── 暴露给 Python 的 API ──
+// ── Public API ──
 function showSpeechBubble(text) {
-  const displayText = text.length > 80 ? text.substring(0, 78) + '\u2026' : text;
+  var displayText = text.length > 70 ? text.substring(0, 68) + '…' : text;
   bubble.textContent = displayText;
   bubble.classList.add('show');
   clearTimeout(speechTimer);
   speechTimer = setTimeout(function() { bubble.classList.remove('show'); }, 8000);
 }
 
-function hideSpeechBubble() {
-  bubble.classList.remove('show');
-}
+function hideSpeechBubble() { bubble.classList.remove('show'); }
 
 function setAnimationMode(newMode) {
   mode = newMode;
@@ -605,7 +646,6 @@ function setAnimationMode(newMode) {
   }
 }
 
-// ── 启动 ──
 if (typeof QWebChannel !== 'undefined') {
   placeholder.textContent = '\u6b63\u5728\u8fde\u63a5...';
 } else {

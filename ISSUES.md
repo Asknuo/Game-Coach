@@ -353,7 +353,55 @@
 
 ---
 
-## 六、优化后的数据流
+## 六、Go Collector LCU 适配 (2026-06-21) — WeGame 国服
+
+### #50 Go LCU lockfile 解析错误 — Riot Client 格式被误当成 LCU
+- **文件**: `collector/internal/lcu/client.go`
+- **问题**: `tryLockfile()` 对 `Riot Client:21968:59062:password:https` 格式取 `parts[2]`(21968) 当端口、`parts[3]`(59062) 当密码，连到 Riot Client 而非 LCU API。5 秒超时后才回退到进程发现
+- **修复**: 检查 `parts[0] == "LeagueClient"`，只处理标准 LCU 格式 `LeagueClient:port:password:protocol`；Riot Client 格式直接跳过，立即回退到进程发现
+- **日期**: 2026-06-21
+
+### #51 Go LCU displayName → gameName 兜底（同 #47）
+- **文件**: `collector/internal/lcu/poller.go`
+- **问题**: 国服 `displayName` 为空，召唤师名称显示空白；`onGameStart` 发送的 `summoner_name` 也是空
+- **修复**: 
+  - `TryConnect` 连接日志：`strVal("displayName")` 为空时取 `strVal("gameName")`
+  - `fetchSummoner`：`SummonerInfo.DisplayName` 使用新增 `strValOr` 兜底
+  - 新增 `strValOr()` 辅助函数
+- **日期**: 2026-06-21
+
+### #52 Go LCU 进程发现 + Riot Client lockfile 完整方案（2026-06-21 多轮迭代）
+- **文件**: `collector/internal/lcu/client.go`, `collector/internal/lol/client.go`, `collector/internal/lcu/poller.go`
+- **根因链**:
+  1. WMIC/`Get-CimInstance` 读取进程命令行需要管理员权限 → 返回空结果
+  2. 引入 `gopsutil` 替代，但 `Cmdline()` 同样返回空（Windows 权限限制）
+  3. 回退：用 gopsutil `Exe()` 获取进程路径 → 推导同目录 lockfile
+  4. `D:\WeGameApps\英雄联盟\LeagueClient\lockfile` 存在但为空（WeGame 不写 LCU lockfile）
+  5. **最终方案**：解析 Riot Client lockfile `Riot Client:43232:53276:password:https` 获取 LCU 端口和密码
+- **子 Bug #52a**: lockfile 格式误解
+  - `Riot Client:port1:port2:password:https` 中 "Riot Client" 之间是**空格**不是冒号
+  - Split(":") 后 `parts[0] = "Riot Client"`，**5 个 parts**，不是 6 个
+  - 原检查 `len(parts) >= 6 && parts[0] == "Riot"` 永远为 false
+  - 修复：`len(parts) >= 5 && strings.HasPrefix(content, "Riot Client")` → `parts[2]=lcu_port, parts[3]=password`
+- **子 Bug #52b**: `connect()` 自检死锁
+  - `connect()` 调用 `Get()` 验证连接，但 `Get()` 第一行 `if !c.connected` 检查 → 直接返回 error
+  - 修复：调用 `Get()` 前先设 `c.connected = true`，失败时重置
+- **子 Bug #52c**: LCU 认证密码不匹配
+  - Riot Client lockfile 中的密码是 Riot Client 的密码，**≠** LCU `--remoting-auth-token`
+  - 验证端点 `/lol-summoner/v1/current-summoner` 和 `/lol-gameflow/v1/session` 均返回 404
+  - **结论**：普通用户无权限读取进程命令行 → LCU 不可用；需 admin 运行 Collector
+- **子 Bug #52d**: LCU 失败后 poller 无限重试
+  - 用户要求 "LCU 没连上就不进行后续的重试"
+  - 修复：poller `Run()` 只尝试一次 `TryConnect()`，失败直接 log + return
+- **涉及文件修改**:
+  - `lcu/client.go`: Riot Client lockfile 格式修正（tryLockfile + tryLockfileByPath）、connect 自检修复、tryProcess 精简日志
+  - `lol/client.go`: RefreshCredentials + discoverFromProcess 同时支持 Riot Client lockfile 格式
+  - `lcu/poller.go`: Run 改为一次尝试，失败跳过
+- **日期**: 2026-06-21
+
+---
+
+## 七、优化后的数据流
 
 ```
 游戏客户端 → Live Client API (127.0.0.1:2999)
@@ -434,3 +482,5 @@ LangGraph 8节点流水线:
 | `collector/internal/event/detector.go` | #10 #23 #27 #29 | 事件检测统一、firstTickInit、敌方经济追踪、goldSpike 永久失效 |
 | `collector/internal/event/engine.go` | #21 #22 #26 | 两遍冷却去重、death 冷却移除、Reset 方法 |
 | `collector/internal/sender/websocket.go` | #25 #28 #34 #44 | writeMu/readMu 拆分、SetReadDeadline 并发保护、Connect 锁降级、ringBuffer drainSince mutex panic 修复 |
+| `collector/internal/lcu/client.go` | #50 #52 | lockfile Riot Client 格式跳过、进程发现 WMIC→PowerShell 回退 |
+| `collector/internal/lcu/poller.go` | #51 | displayName→gameName 国服兜底、strValOr 辅助函数 |

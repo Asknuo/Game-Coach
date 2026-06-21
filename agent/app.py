@@ -6,8 +6,6 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from graph import build_coaching_graph, set_injections
 from graph.nodes import CoachState
@@ -115,21 +113,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# 挂载静态文件目录
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-os.makedirs(static_dir, exist_ok=True)
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-
-@app.get("/overlay")
-async def overlay():
-    """浏览器 Overlay 页面（内置语音）。"""
-    overlay_path = os.path.join(static_dir, "overlay.html")
-    if os.path.exists(overlay_path):
-        return FileResponse(overlay_path)
-    return {"error": "overlay.html not found, run setup first"}
-
 
 @app.websocket("/ws/overlay")
 async def overlay_ws(websocket: WebSocket):

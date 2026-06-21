@@ -199,6 +199,9 @@ func (w *WebSocket) send(msgType string, payload interface{}) error {
 
 	err = w.conn.WriteMessage(websocket.TextMessage, body)
 	if err != nil {
+		// Connection is dead — nil it so concurrent senders (e.g. LCU poller)
+		// will buffer their events instead of hitting the same dead connection.
+		w.conn = nil
 		w.buffer.push(body)
 	}
 	return err

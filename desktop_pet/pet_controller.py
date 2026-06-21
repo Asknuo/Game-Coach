@@ -1,7 +1,7 @@
 """
 桌宠控制器 — 协调所有组件：
 - FramelessPetWindow (无边框窗口)
-- Live2DWidget (Live2D / Canvas 角色渲染)
+- PetWidget (QPainter 手绘角色)
 - TTSEngine (语音合成)
 - TipClient (WebSocket 通信)
 """
@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtWidgets import QVBoxLayout, QApplication
 
 from desktop_pet.window import FramelessPetWindow
+from desktop_pet.pet_widget import PetWidget
 from desktop_pet.tts_engine import TTSEngine
 from desktop_pet.ws_client import TipClient
 
@@ -40,25 +41,9 @@ class PetController(QObject):
     def __init__(self):
         super().__init__()
         self._window: FramelessPetWindow | None = None
-        self._live2d = None
+        self._pet: PetWidget | None = None
         self._tts: TTSEngine | None = None
         self._ws_client: TipClient | None = None
-        self._speech_hide_timer: QTimer | None = None
-        self._has_live2d_widget = False
-
-        # 尝试导入 Live2DWidget
-        try:
-            from desktop_pet.live2d_widget import Live2DWidget
-            self._Live2DWidget = Live2DWidget
-            self._has_live2d_widget = True
-        except ImportError as e:
-            logger.warning(
-                "Live2D widget not available (PyQtWebEngine required): %s", e
-            )
-            self._has_live2d_widget = False
-        except Exception as e:
-            logger.warning("Live2D widget import error: %s", e)
-            self._has_live2d_widget = False
 
     # ── 初始化 ─────────────────────────────────
 
@@ -74,11 +59,10 @@ class PetController(QObject):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Live2D / Canvas 角色
-        if self._has_live2d_widget:
-            self._live2d = self._Live2DWidget(self._window)
-            layout.addWidget(self._live2d)
-            logger.info("Live2D widget added to window")
+        # 手绘角色
+        self._pet = PetWidget(self._window)
+        layout.addWidget(self._pet)
+        logger.info("Pet widget added to window")
 
         # 右键菜单
         menu = FramelessPetWindow.create_default_menu(
@@ -87,11 +71,6 @@ class PetController(QObject):
             quit_callback=self._quit,
         )
         self._window.set_context_menu(menu)
-
-        # 语音气泡隐藏定时器
-        self._speech_hide_timer = QTimer(self._window)
-        self._speech_hide_timer.setSingleShot(True)
-        self._speech_hide_timer.timeout.connect(self._hide_speech_bubble)
 
         # 定位到右下角
         self._window.move_to_bottom_right()
@@ -147,22 +126,9 @@ class PetController(QObject):
             ).start()
 
     def _show_speech_bubble(self, text: str):
-        """在主线程显示说话气泡。"""
-        display_text = text[:80] + "…" if len(text) > 80 else text
-
-        # Live2D 气泡
-        if self._live2d:
-            self._live2d.show_speech_bubble(display_text)
-
-        # 自动隐藏
-        if self._speech_hide_timer:
-            self._speech_hide_timer.start(SPEECH_DURATION_MS)
-
-    def _hide_speech_bubble(self):
-        """隐藏气泡。"""
-        if self._live2d:
-            self._live2d.hide_speech_bubble()
-            self._live2d.set_idle_animation()
+        """显示说话气泡。"""
+        if self._pet:
+            self._pet.say(text, SPEECH_DURATION_MS)
 
     # ── 连接状态 ────────────────────────────────
 

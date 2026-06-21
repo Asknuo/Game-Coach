@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/game-coach/collector/internal/event"
+	"github.com/game-coach/collector/internal/lcu"
 	"github.com/game-coach/collector/internal/lol"
 	"github.com/game-coach/collector/internal/sender"
 )
@@ -49,6 +50,17 @@ func main() {
 	engine := event.NewEngine(event.NewDetector())
 	ws := sender.NewWebSocket(cfg.AgentWSURL)
 
+	// LCU poller — lobby data (summoner, runes, masteries, champion select).
+	lcuClient := lcu.NewClient()
+	lcuPoller := lcu.NewPoller(lcuClient, func(name string, data map[string]interface{}) {
+		if err := ws.SendEvent(event.Event{Name: name, Data: data}); err != nil {
+			log.Printf("[LCU] send event failed: %v", err)
+		} else {
+			log.Printf("[LCU] event: %s", name)
+		}
+	})
+	go lcuPoller.Run(ctx)
+
 	log.Printf("collector starting, agent=%s poll=%s", cfg.AgentWSURL, cfg.PollInterval)
 
 	for {
@@ -75,27 +87,50 @@ func runLoop(ctx context.Context, client *lol.Client, engine *event.Engine, ws *
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	credsNotified := false
+	gameNotified := false
+	notInGameLogged := false
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if !client.IsAvailable() {
+			if !client.HasCredentials() {
 				if err := client.RefreshCredentials(); err != nil {
-					log.Printf("waiting for lol client: %v", err)
+					if !credsNotified {
+						credsNotified = true
+						log.Printf("game data: %v", err)
+					}
 					continue
 				}
-				log.Println("lol live client connected")
+				credsNotified = false
+				gameNotified = false
+				notInGameLogged = false
+				log.Println("game data: live client credentials ready (port 2999)")
 			}
 
 			state, err := client.FetchGameState(ctx)
 			if err != nil {
-				log.Printf("fetch state: %v", err)
-				// Reset detector on fetch failure to avoid stale-state
-				// jump on next success (periodic checks rely on lastState).
+				if err == lol.ErrNotInGame || lol.IsNotInGame(err) {
+					if !notInGameLogged {
+						notInGameLogged = true
+						log.Println("game data: waiting for game to start...")
+					}
+					continue
+				}
+				log.Printf("fetch state error: %v", err)
 				engine.Reset()
 				continue
 			}
+
+			if !gameNotified {
+				gameNotified = true
+				log.Println("game data: game started, streaming state + events")
+			}
+			notInGameLogged = false
+
+			state.MergeActivePlayer()
 
 			if err := ws.SendState(state); err != nil {
 				return err

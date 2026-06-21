@@ -156,9 +156,6 @@ Game Coach/
 │   ├── middleware/                 # 中间件
 │   │   └── game_middleware.py       #   GameMiddleware — state/event 消息拦截与预处理
 │   │
-│   └── static/                     # 静态资源
-│       └── overlay.html            #   浏览器 Overlay — 暗色主题 + Web Speech API + 历史记录
-│
 ├── collector/                       # Go — 轻量版采集器 & 事件检测（可选，性能更好）
 │   ├── cmd/
 │   │   ├── main.go                 #   主入口：轮询 + 事件检测 + WS 发送，信号处理
@@ -325,7 +322,6 @@ python -m collector.bridge
 |------|------|------|
 | `http://localhost:8000/health` | GET | Agent 健康检查 — 服务状态 + 记忆统计 |
 | `http://localhost:8000/tips/latest` | GET | 最新状态和建议 — 当前英雄/阶段/记忆概况 |
-| `http://localhost:8000/overlay` | GET | 浏览器 Overlay 页面 — 暗色主题 + 语音播报 |
 
 ### 8. （可选）启动桌面小玩偶
 
@@ -637,19 +633,7 @@ Collector 连接后，Agent 日志实时输出每条 coaching tip：
 [INFO] [review] Game ended — CS 187 @ 28min (6.7/min), needs improvement. 3 deaths to ganks.
 ```
 
-### 2. 浏览器 Overlay（`/overlay`）
-
-特性：
-- 暗色主题（`#0a0a0a` 背景），视觉不干扰游戏
-- 底部居中卡片，毛玻璃效果（`backdrop-filter: blur(12px)`）
-- 淡入动画（`fadeInUp` 0.3s）
-- 优先级颜色标记（红色 > 黄色 > 蓝色）
-- 右上角半透明历史记录列表（`opacity: 0.25`，悬停 `opacity: 1`）
-- 内置 Web Speech API 语音播报（自动检测中文语音，优先 Xiaoxiao）
-- 静音 / 切换语音 / 测试语音 按钮
-- WebSocket 自动重连
-
-### 3. Desktop Pet 桌面小玩偶（`companion.py`）
+### 2. Desktop Pet 桌面小玩偶（`companion.py`）
 
 特性：
 - 无边框置顶窗口（140×180），默认右下角

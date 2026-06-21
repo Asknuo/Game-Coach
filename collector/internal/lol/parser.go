@@ -19,6 +19,7 @@ type GameState struct {
 
 type ActivePlayer struct {
 	SummonerName string  `json:"summoner_name"`
+	Team         string  `json:"team"`
 	Level        int     `json:"level"`
 	CurrentGold  float64 `json:"current_gold"`
 	Health       float64 `json:"health"`
@@ -79,6 +80,11 @@ func ParseGameState(raw []byte) (*GameState, error) {
 
 	state := &GameState{
 		CollectedAt: time.Now().UTC(),
+		// Pre-allocate empty slice so JSON marshal produces [] not null.
+		// When allPlayers is missing from the API response (loading screen,
+		// early game), a nil slice would serialize as null, which Pydantic rejects.
+		AllPlayers:   []Player{},
+		Events:       []GameEvent{},
 	}
 
 	if data, ok := root["gameData"]; ok {

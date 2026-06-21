@@ -14,6 +14,20 @@ from PyQt6.QtCore import Qt, QPoint, QTimer
 from PyQt6.QtGui import QAction, QMouseEvent
 from PyQt6.QtWidgets import QWidget, QMenu, QApplication
 
+# ── Win32 结构体 ──────────────────────────────────
+
+class MSG(ctypes.Structure):
+    _fields_ = [
+        ("hwnd", wintypes.HWND),
+        ("message", wintypes.UINT),
+        ("_pad0", wintypes.UINT),  # padding after 4-byte message
+        ("wParam", wintypes.WPARAM),
+        ("lParam", wintypes.LPARAM),
+        ("time", wintypes.DWORD),
+        ("pt_x", wintypes.LONG),
+        ("pt_y", wintypes.LONG),
+    ]
+
 # ── Win32 DWM API 常量 ──────────────────────────────
 _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 _DWMWA_WINDOW_CORNER_PREFERENCE = 33
@@ -75,18 +89,16 @@ class FramelessPetWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # 无边框 + 透明背景
+        # 无边框 + 透明背景 (不设 Tool，否则拖拽失效)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
-        # 鼠标拖拽位置
-        self._drag_pos: QPoint | None = None
+        # 确保原生句柄可用
+        self.winId()
 
         # 右键菜单
         self._context_menu: QMenu | None = None
@@ -132,25 +144,6 @@ class FramelessPetWindow(QWidget):
             y = (geom.height() - self.height()) // 2
             self.move(x, y)
 
-    # ── 鼠标拖拽 ────────────────────────────────
-
-    def mousePressEvent(self, event: QMouseEvent):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            event.accept()
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event: QMouseEvent):
-        if event.buttons() & Qt.MouseButton.LeftButton and self._drag_pos is not None:
-            new_pos = event.globalPosition().toPoint() - self._drag_pos
-            self.move(new_pos)
-            event.accept()
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QMouseEvent):
-        self._drag_pos = None
-        super().mouseReleaseEvent(event)
-
     # ── 右键菜单 ────────────────────────────────
 
     def set_context_menu(self, menu: QMenu):
@@ -161,6 +154,44 @@ class FramelessPetWindow(QWidget):
         if self._context_menu:
             self._context_menu.exec(event.globalPos())
         event.accept()
+
+    def keyPressEvent(self, event):
+        """Escape 键退出桌宠。"""
+        from PyQt6.QtCore import Qt as QtCore
+        if event.key() == QtCore.Key.Key_Escape:
+            QApplication.quit()
+        super().keyPressEvent(event)
+
+    # ── 透明区域点击穿透 ────────────────────────
+
+    def nativeEvent(self, eventType, message):
+        """WM_NCHITTEST: 只对角色区域响应，边缘穿透。
+        
+        注意: 穿透范围故意设得较大以确保拖拽可用。
+        如果拖拽仍不工作，暂时全部放行 (返回 False,0)。
+        """
+        try:
+            msg_ptr = ctypes.cast(int(message), ctypes.POINTER(MSG))
+            msg = msg_ptr.contents
+        except Exception:
+            return False, 0
+
+        if msg.message != 0x0084:  # not WM_NCHITTEST
+            return False, 0
+
+        x = ctypes.c_short(msg.lParam & 0xFFFF).value
+        y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+        pt = self.mapFromGlobal(QPoint(x, y))
+
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+
+        dx = (pt.x() - cx) / (w * 0.48)
+        dy = (pt.y() - cy) / (h * 0.56)
+        if dx * dx + dy * dy <= 1.0:
+            return False, 0  # 角色区 → HTCAPTION，可拖拽
+        else:
+            return True, -1   # 外缘 → HTTRANSPARENT，穿透
 
     # ── 便捷菜单创建 ──────────────────────────────
 

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Vec2(BaseModel):
@@ -69,6 +69,14 @@ class GameState(BaseModel):
     dragon_timer: Optional[DragonInfo] = None
     baron_timer: Optional[BaronInfo] = None
     collected_at: Optional[datetime] = None
+
+    @field_validator("all_players", "events", mode="before")
+    @classmethod
+    def _none_to_empty_list(cls, v):
+        """Coerce null → [], defensive against Go nil-slice serialization."""
+        if v is None:
+            return []
+        return v
 
     def active_player_health_pct(self) -> float:
         if self.active_player.max_health <= 0:
