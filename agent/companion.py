@@ -464,6 +464,7 @@ class TipClient:
             try:
                 logger.info("Connecting to agent at %s...", WS_URL)
                 self.ws = websocket.create_connection(WS_URL, timeout=10)
+                self.ws.settimeout(5)  # recv 超时 5 秒，方便心跳
                 logger.info("Connected to agent!")
 
                 # 通知用户
@@ -471,24 +472,44 @@ class TipClient:
                     "教练已上线", "准备为你提供对局建议"
                 ))
 
+                # 记录上次心跳时间
+                last_ping = time.time()
+
                 while self.running:
-                    raw = self.ws.recv()
                     try:
-                        msg = json.loads(raw)
-                        if msg.get("type") == "tip":
-                            payload = msg.get("payload", {})
-                            skill = payload.get("skill", "")
-                            message = payload.get("message", "")
-                            if message:
-                                # 在主线程更新 UI
-                                def update():
-                                    self.pet.show_tip(skill, message)
-                                self.pet.root.after(0, update)
-                    except json.JSONDecodeError:
-                        pass
+                        raw = self.ws.recv()
+                        last_ping = time.time()  # 收到数据也刷新心跳计时
+                    except websocket.WebSocketTimeoutException:
+                        pass  # 超时，检查是否需要发心跳
+                    except Exception:
+                        raise  # 真正的错误，抛到外层重连
+                    else:
+                        try:
+                            msg = json.loads(raw)
+                            if msg.get("type") == "tip":
+                                payload = msg.get("payload", {})
+                                skill = payload.get("skill", "")
+                                message = payload.get("message", "")
+                                if message:
+                                    # 在主线程更新 UI
+                                    def update():
+                                        self.pet.show_tip(skill, message)
+                                    self.pet.root.after(0, update)
+                        except json.JSONDecodeError:
+                            pass
+
+                    # 每 15 秒发一次心跳，防止 Agent 断开连接
+                    if time.time() - last_ping > 15:
+                        try:
+                            self.ws.send('{"type":"ping"}')
+                            last_ping = time.time()
+                        except Exception:
+                            break
 
             except websocket.WebSocketConnectionClosedException:
                 logger.info("Connection closed, reconnecting in 3s...")
+            except websocket.WebSocketTimeoutException:
+                logger.warning("WS timeout, reconnecting in 3s...")
             except Exception as e:
                 logger.warning("WS error: %s, reconnecting in 3s...", e)
             finally:

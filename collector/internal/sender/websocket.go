@@ -43,7 +43,6 @@ func (b *ringBuffer) push(data []byte) {
 
 func (b *ringBuffer) drainSince(cutoffMs int64) [][]byte {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	result := make([][]byte, 0, b.count)
 	for i := 0; i < b.count; i++ {
 		idx := (b.head - b.count + i + bufferCapacity) % bufferCapacity
@@ -51,7 +50,11 @@ func (b *ringBuffer) drainSince(cutoffMs int64) [][]byte {
 			result = append(result, b.ring[idx].bytes)
 		}
 	}
-	*b = ringBuffer{}
+	// Reset fields individually — never zero the mutex while holding it.
+	b.head = 0
+	b.count = 0
+	b.ring = [bufferCapacity]bufferedMsg{}
+	b.mu.Unlock()
 	return result
 }
 

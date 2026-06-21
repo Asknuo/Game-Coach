@@ -4,8 +4,8 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - redis_data: /data
-
+      - redis_data:/data   # ✅ 冒号后不要有空格
+    restart: unless-stopped
   agent:
     build:
       context: ./agent

@@ -81,6 +81,7 @@ func (c *Client) resolveLockfile() (string, error) {
 
 	candidates := []string{
 		filepath.Join(home, "AppData", "Local", "Riot Games", "Riot Client", "Config", "lockfile"),
+		`D:\WeGameApps\英雄联盟\Riot Client Data\User Data\Config\lockfile`, // WeGame 国服
 	}
 	if runtime.GOOS == "darwin" {
 		candidates = []string{

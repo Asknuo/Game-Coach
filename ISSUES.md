@@ -303,7 +303,57 @@
 
 ---
 
-## 五、优化后的数据流
+## 五、启动适配 Bug 修复 (2026-06-20) — WeGame 国服 + 启动流程
+
+### #44 致命: ringBuffer.drainSince 结构体整体清零导致 mutex 重复解锁 panic
+- **文件**: `collector/internal/sender/websocket.go:54`
+- **问题**: `*b = ringBuffer{}` 将整个结构体（含 mutex）清零，之后 `defer b.mu.Unlock()` 对零值 mutex 调 Unlock → `sync: unlock of unlocked mutex` panic，Go Collector 启动即崩溃
+- **修复**: 移除 `defer b.mu.Unlock()`，改为单独重置 `b.head`/`b.count`/`b.ring` 字段，最后手动 `b.mu.Unlock()`
+- **日期**: 2026-06-20
+
+### #45 WeGame 国服 lockfile 路径错误 — LeagueClient\lockfile 为空文件
+- **文件**: `agent/collector/lcu_client.py`, `collector/config/config.yaml`, `collector/internal/lol/client.go`
+- **问题**: `D:\WeGameApps\英雄联盟\LeagueClient\lockfile` 是 0 字节空文件，被优先匹配导致 lockfile 解析失败。正确的 Riot Client lockfile 在 `D:\WeGameApps\英雄联盟\Riot Client Data\User Data\Config\lockfile`（52 字节）
+- **修复**: 
+  - Python `_LOCKFILE_PATHS` 移除空文件路径，加入正确的 Riot Client lockfile 路径
+  - Go `resolveLockfile()` 加入 WeGame 国服路径
+  - YAML 配置 `lockfile_path` 默认指向正确路径
+- **日期**: 2026-06-20
+
+### #46 国服 LCU API 凭据不在 lockfile 中，需从进程命令行提取
+- **文件**: `agent/collector/lcu_client.py`
+- **问题**: Riot Client lockfile 只含 Riot Client 端口/密码（59062），不包含 LCU API 凭据。国服新版架构中 `--remoting-auth-token` 和 `--app-port` 在 `LeagueClientUx.exe` 进程命令行中，传统 lockfile 完全不可用。LCU 监听 59162 端口，需正确 token 访问
+- **修复**: 
+  - 新增 `_try_connect_from_process()` — 用 `psutil` 扫描 `LeagueClientUx.exe` 进程，正则提取 `--remoting-auth-token=` 和 `--app-port=`
+  - 新增 `_connect_lcu(port, password)` — 抽取连接测试逻辑
+  - `_try_connect()` 改为两阶段：先 lockfile → 失败则进程命令行回退
+  - 依赖新增 `psutil` 和 `re` 导入
+- **日期**: 2026-06-20
+
+### #47 国服 summoner displayName 为空，UI 显示 "?"
+- **文件**: `agent/collector/bridge.py`
+- **问题**: 国服 LCU API 返回的 `displayName` 为空字符串（外服才有值），实际召唤师名称在 `gameName` 字段（如"利物浦浦浦"）
+- **修复**: `lcu_connected` 回调中 `displayName or gameName` 兜底
+- **日期**: 2026-06-20
+
+### #48 桌宠 WebSocket recv() 超时导致频繁断连
+- **文件**: `agent/companion.py`, `agent/app.py`
+- **问题**: Agent 的 `overlay_ws` 在 `receive_text()` 阻塞等数据，但桌宠只收不发 → uvicorn 超时主动断开连接（WinError 10054）。同时 `recv()` 默认超时过短
+- **修复**: 
+  - 桌宠每 15 秒发 `{"type":"ping"}` 心跳，`recv()` 超时改为 5 秒便于心跳调度
+  - Agent 忽略 `type: ping` 消息
+  - 异常处理分层：内层 catch `WebSocketTimeoutException` 做心跳，真正错误才抛到外层重连
+- **日期**: 2026-06-20
+
+### #49 LCU 客户端日志过于冗余
+- **文件**: `agent/collector/lcu_client.py`
+- **问题**: lockfile 解析/API 测试失败时反复输出 WARNING 级别日志，刷屏影响可读性
+- **修复**: 将 `_try_connect` 系列方法的失败日志从 `logger.warning` 降级为 `logger.debug`；仅连接成功输出 `logger.info`
+- **日期**: 2026-06-20
+
+---
+
+## 六、优化后的数据流
 
 ```
 游戏客户端 → Live Client API (127.0.0.1:2999)
@@ -353,8 +403,9 @@ LangGraph 8节点流水线:
 
 | 文件 | 涉及问题 | 改动性质 |
 |------|---------|---------|
+| `agent/collector/lcu_client.py` | #45 #46 #49 | WeGame lockfile 路径、进程命令行 LCU 凭据提取、日志降噪 |
 | `agent/collector/live_client.py` | #1 #2 #7 #8 #43 | 事件检测、心跳、装备增强、dragon/baron 字段补齐 |
-| `agent/collector/bridge.py` | #42 | game_start 格式规范化、game_end 事件发送 |
+| `agent/collector/bridge.py` | #42 #47 | game_start 格式规范化、game_end 事件发送、国服 displayName→gameName 兜底 |
 | `agent/app.py` | #4 #10 #12 #13 #15 #16 #24 #35 | 紧急事件绕过队列、Detector 集成、知识库刷新、反馈闭环、区域映射、同步快照防竞态 |
 | `agent/detector.py` | #10 | **新建后删除**：独立事件检测模块（全部迁移到 Go） |
 | `agent/map_zones.py` | #15 | **新建**：坐标→区域语义解析 |
@@ -364,7 +415,7 @@ LangGraph 8节点流水线:
 | `agent/memory/queue.py` | #4 | 紧急事件防御过滤 |
 | `agent/memory/redis_store.py` | #13 | 反馈闭环追踪 |
 | `agent/memory/injector.py` | #15 | 区域信息注入 |
-| `agent/companion.py` | #11 #41 | Edge TTS 三级链路、线程传参 lambda 闭包 |
+| `agent/companion.py` | #11 #41 #48 | Edge TTS 三级链路、线程传参 lambda 闭包、WebSocket recv 超时修复 |
 | `agent/knowledge/chroma_store.py` | #12 | 知识库新鲜度检查 |
 | `agent/knowledge/ingest.py` | #3 #12 | 兼容新旧格式、摄入时间戳 |
 | `agent/knowledge/data_fetcher.py` | #3 | items 保存格式 |
@@ -375,10 +426,11 @@ LangGraph 8节点流水线:
 | `agent/skills/macro/SKILL.md` | #14 | 击杀后决策表 |
 | `agent/skills/build/gotchas.md` | #2 | 敌方装备坑点 |
 | `collector/cmd/main.go` | #26 #32 | 失败时重置 engine、POLL_INTERVAL 警告日志 |
+| `collector/config/config.yaml` | #45 | WeGame 国服 lockfile_path 默认值 |
 | `collector/internal/lol/parser.go` | #27 #40 | Player 结构体扩展字段、ActivePlayer 补齐 items 解析 |
 | `collector/internal/lol/state.go` | #10 | ActivePlayerFromAll 辅助方法 |
-| `collector/internal/lol/client.go` | #30 #31 | available → atomic.Bool、FetchGameState 传递 context |
+| `collector/internal/lol/client.go` | #30 #31 #45 | available → atomic.Bool、FetchGameState 传递 context、WeGame 国服 lockfile 路径 |
 | `collector/internal/lol/objectives.go` | #33 | Enrich 入口置 nil 防止旧值残留 |
 | `collector/internal/event/detector.go` | #10 #23 #27 #29 | 事件检测统一、firstTickInit、敌方经济追踪、goldSpike 永久失效 |
 | `collector/internal/event/engine.go` | #21 #22 #26 | 两遍冷却去重、death 冷却移除、Reset 方法 |
-| `collector/internal/sender/websocket.go` | #25 #28 #34 | writeMu/readMu 拆分、SetReadDeadline 并发保护、Connect 锁降级 |
+| `collector/internal/sender/websocket.go` | #25 #28 #34 #44 | writeMu/readMu 拆分、SetReadDeadline 并发保护、Connect 锁降级、ringBuffer drainSince mutex panic 修复 |

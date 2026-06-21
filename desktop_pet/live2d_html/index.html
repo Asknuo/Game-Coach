@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live2D Pet</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+  }
+  #live2d-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+  }
+  #placeholder {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Microsoft YaHei', sans-serif;
+    color: rgba(255,255,255,0.6);
+    font-size: 14px;
+    pointer-events: none; /* stylelint-disable-line */
+  }
+  #speech-bubble {
+    position: absolute;
+    top: 5%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(30, 41, 59, 0.92);
+    border: 1px solid rgba(51, 65, 85, 0.8);
+    border-radius: 14px;
+    padding: 10px 18px;
+    color: #e2e8f0;
+    font-family: 'Microsoft YaHei', sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    max-width: 90%;
+    text-align: center;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+    z-index: 10;
+  }
+  #speech-bubble.show { opacity: 1; }
+  #speech-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 8px solid transparent;
+    border-right: 8px solid transparent;
+    border-top: 8px solid rgba(30, 41, 59, 0.92);
+  }
+</style>
+</head>
+<body>
+
+<canvas id="live2d-canvas"></canvas>
+<div id="placeholder">Live2D 模型加载中...<br>请将模型文件放入 model/ 目录</div>
+<div id="speech-bubble"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// Live2D Pet Controller (Web 端)
+// 支持两种模式：
+//   A) 完整 Live2D (需 Cubism SDK + model 文件)
+//   B) Canvas 绘制回退角色 — 可爱动漫女主 (开箱即用)
+// ═══════════════════════════════════════════════════════
+
+let mode = 'canvas';
+let speechTimer = null;
+const canvas = document.getElementById('live2d-canvas');
+const ctx = canvas.getContext('2d');
+const bubble = document.getElementById('speech-bubble');
+const placeholder = document.getElementById('placeholder');
+
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// ── QWebChannel 桥接 ──
+let bridge = null;
+if (typeof QWebChannel !== 'undefined') {
+  new QWebChannel(qt.webChannelTransport, function(channel) {
+    bridge = channel.objects.bridge;
+    if (bridge) bridge.on_ready();
+  });
+}
+
+// ── 动画状态 ──
+let animFrame = 0;
+let bobOffset = 0;
+let blinkTimer = 0;
+let blinkThreshold = 200;
+let isBlinking = false;
+
+function S() { return Math.min(canvas.width, canvas.height) / 480; }
+
+function drawCanvasPet() {
+  const w = canvas.width, h = canvas.height;
+  const s = S();
+  ctx.clearRect(0, 0, w, h);
+
+  bobOffset = Math.sin(animFrame * 0.025) * 3 * s;
+  animFrame = (animFrame + 1) % 100000;
+
+  blinkTimer++;
+  if (blinkTimer > blinkThreshold) {
+    isBlinking = true;
+    if (blinkTimer > blinkThreshold + 6) {
+      blinkTimer = 0;
+      isBlinking = false;
+      blinkThreshold = 180 + ~~(Math.random() * 120);
+    }
+  }
+
+  const cx = w / 2;
+  const baseY = h * 0.58 + bobOffset;
+  ctx.save();
+
+  // ─────── 颜色 ───────
+  const hairPink = '#f8a0b8', hairDark = '#e87890', hairShadow = '#d46078';
+  const skinLight = '#fff5ee', skinMid = '#fce4d6', skinDark = '#f0d0b8';
+  const uniformWhite = '#fafafa', uniformBlue = '#2c3e7b', uniformBlueDark = '#1a2870';
+  const ribbonRed = '#e84444', ribbonDark = '#cc3333';
+  const eyePurple = '#7b68ee', eyePurpleDark = '#3a2080';
+
+  // ═══════════════════════════════════════════════
+  // 后侧长发 — 双马尾垂到腿部
+  // ═══════════════════════════════════════════════
+  ctx.fillStyle = hairPink;
+  // 左马尾
+  ctx.beginPath();
+  ctx.moveTo(cx - 56*s, baseY - 100*s);
+  ctx.quadraticCurveTo(cx - 90*s, baseY - 60*s, cx - 70*s, baseY + 20*s);
+  ctx.quadraticCurveTo(cx - 55*s, baseY + 60*s, cx - 45*s, baseY + 80*s);
+  ctx.lineTo(cx - 30*s, baseY - 40*s);
+  ctx.quadraticCurveTo(cx - 40*s, baseY - 80*s, cx - 45*s, baseY - 110*s);
+  ctx.closePath();
+  ctx.fill();
+  // 右马尾
+  ctx.beginPath();
+  ctx.moveTo(cx + 56*s, baseY - 100*s);
+  ctx.quadraticCurveTo(cx + 90*s, baseY - 60*s, cx + 70*s, baseY + 20*s);
+  ctx.quadraticCurveTo(cx + 55*s, baseY + 60*s, cx + 45*s, baseY + 80*s);
+  ctx.lineTo(cx + 30*s, baseY - 40*s);
+  ctx.quadraticCurveTo(cx + 40*s, baseY - 80*s, cx + 45*s, baseY - 110*s);
+  ctx.closePath();
+  ctx.fill();
+
+  // 发尾深色
+  ctx.fillStyle = hairDark;
+  ctx.beginPath();
+  ctx.moveTo(cx - 55*s, baseY + 50*s);
+  ctx.quadraticCurveTo(cx - 50*s, baseY + 70*s, cx - 45*s, baseY + 80*s);
+  ctx.lineTo(cx - 38*s, baseY - 20*s);
+  ctx.quadraticCurveTo(cx - 48*s, baseY + 30*s, cx - 55*s, baseY + 50*s);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(cx + 55*s, baseY + 50*s);
+  ctx.quadraticCurveTo(cx + 50*s, baseY + 70*s, cx + 45*s, baseY + 80*s);
+  ctx.lineTo(cx + 38*s, baseY - 20*s);
+  ctx.quadraticCurveTo(cx + 48*s, baseY + 30*s, cx + 55*s, baseY + 50*s);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 腿部 + 袜子 + 鞋子
+  // ═══════════════════════════════════════════════
+  ctx.fillStyle = skinMid;
+  ctx.strokeStyle = '#e8c8b0';
+  ctx.lineWidth = 1 * s;
+  ctx.beginPath();
+  ctx.moveTo(cx - 18*s, baseY + 68*s);
+  ctx.lineTo(cx - 24*s, baseY + 115*s);
+  ctx.lineTo(cx - 8*s, baseY + 115*s);
+  ctx.lineTo(cx - 6*s, baseY + 68*s);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx + 6*s, baseY + 68*s);
+  ctx.lineTo(cx + 8*s, baseY + 115*s);
+  ctx.lineTo(cx + 24*s, baseY + 115*s);
+  ctx.lineTo(cx + 18*s, baseY + 68*s);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // 袜子
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#e0e0e0';
+  ctx.beginPath();
+  ctx.moveTo(cx - 23*s, baseY + 100*s);
+  ctx.lineTo(cx - 24*s, baseY + 115*s);
+  ctx.lineTo(cx - 8*s, baseY + 115*s);
+  ctx.lineTo(cx - 7*s, baseY + 100*s);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx + 7*s, baseY + 100*s);
+  ctx.lineTo(cx + 8*s, baseY + 115*s);
+  ctx.lineTo(cx + 24*s, baseY + 115*s);
+  ctx.lineTo(cx + 23*s, baseY + 100*s);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // 鞋子
+  ctx.fillStyle = '#8b4513';
+  ctx.beginPath();
+  ctx.ellipse(cx - 16*s, baseY + 116*s, 12*s, 5*s, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(cx + 16*s, baseY + 116*s, 12*s, 5*s, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 上衣 — 水手服
+  // ═══════════════════════════════════════════════
+  // 领子
+  ctx.fillStyle = uniformBlue;
+  ctx.beginPath();
+  ctx.moveTo(cx - 50*s, baseY - 22*s);
+  ctx.lineTo(cx - 10*s, baseY + 14*s);
+  ctx.lineTo(cx + 10*s, baseY + 14*s);
+  ctx.lineTo(cx + 50*s, baseY - 22*s);
+  ctx.quadraticCurveTo(cx + 55*s, baseY - 28*s, cx + 50*s, baseY - 34*s);
+  ctx.lineTo(cx + 30*s, baseY - 26*s);
+  ctx.quadraticCurveTo(cx, baseY - 10*s, cx - 30*s, baseY - 26*s);
+  ctx.lineTo(cx - 50*s, baseY - 34*s);
+  ctx.quadraticCurveTo(cx - 55*s, baseY - 28*s, cx - 50*s, baseY - 22*s);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1.5 * s;
+  ctx.stroke();
+
+  // 上衣白色主体
+  ctx.fillStyle = uniformWhite;
+  ctx.beginPath();
+  ctx.moveTo(cx - 36*s, baseY - 26*s);
+  ctx.quadraticCurveTo(cx - 48*s, baseY - 14*s, cx - 42*s, baseY + 30*s);
+  ctx.lineTo(cx + 42*s, baseY + 30*s);
+  ctx.quadraticCurveTo(cx + 48*s, baseY - 14*s, cx + 36*s, baseY - 26*s);
+  ctx.quadraticCurveTo(cx, baseY - 8*s, cx - 36*s, baseY - 26*s);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#d0d0d0';
+  ctx.lineWidth = 1 * s;
+  ctx.stroke();
+
+  // 红色领巾
+  ctx.fillStyle = ribbonRed;
+  ctx.beginPath();
+  ctx.moveTo(cx - 3*s, baseY - 14*s);
+  ctx.quadraticCurveTo(cx - 28*s, baseY + 4*s, cx - 34*s, baseY + 20*s);
+  ctx.quadraticCurveTo(cx - 18*s, baseY + 8*s, cx - 3*s, baseY - 4*s);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(cx + 3*s, baseY - 14*s);
+  ctx.quadraticCurveTo(cx + 28*s, baseY + 4*s, cx + 34*s, baseY + 20*s);
+  ctx.quadraticCurveTo(cx + 18*s, baseY + 8*s, cx + 3*s, baseY - 4*s);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = ribbonDark;
+  ctx.beginPath();
+  ctx.arc(cx, baseY - 16*s, 5*s, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 百褶裙
+  // ═══════════════════════════════════════════════
+  ctx.fillStyle = uniformBlue;
+  ctx.beginPath();
+  ctx.moveTo(cx - 42*s, baseY + 30*s);
+  ctx.lineTo(cx - 52*s, baseY + 68*s);
+  ctx.quadraticCurveTo(cx - 30*s, baseY + 72*s, cx, baseY + 70*s);
+  ctx.quadraticCurveTo(cx + 30*s, baseY + 72*s, cx + 52*s, baseY + 68*s);
+  ctx.lineTo(cx + 42*s, baseY + 30*s);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = uniformBlueDark;
+  ctx.lineWidth = 1 * s;
+  ctx.stroke();
+
+  ctx.strokeStyle = '#3449a0';
+  ctx.lineWidth = 0.6 * s;
+  for (let i = -3; i <= 3; i++) {
+    ctx.beginPath();
+    ctx.moveTo(cx + i * 10*s, baseY + 32*s);
+    ctx.lineTo(cx + i * 14*s, baseY + 68*s);
+    ctx.stroke();
+  }
+
+  // ═══════════════════════════════════════════════
+  // 手臂 + 袖子
+  // ═══════════════════════════════════════════════
+  const armWL = Math.sin(animFrame * 0.04) * 5 * s;
+  const armWR = Math.cos(animFrame * 0.04) * 5 * s;
+
+  ctx.fillStyle = uniformWhite;
+  ctx.strokeStyle = '#d0d0d0';
+  ctx.lineWidth = 1 * s;
+  // 左袖
+  ctx.beginPath();
+  ctx.moveTo(cx - 38*s, baseY - 18*s);
+  ctx.quadraticCurveTo(cx - 58*s, baseY - 12*s, cx - 62*s, baseY + 6*s + armWL);
+  ctx.quadraticCurveTo(cx - 54*s, baseY + 16*s + armWL, cx - 44*s, baseY + 10*s);
+  ctx.quadraticCurveTo(cx - 36*s, baseY + 4*s, cx - 34*s, baseY - 8*s);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  // 右袖
+  ctx.beginPath();
+  ctx.moveTo(cx + 38*s, baseY - 18*s);
+  ctx.quadraticCurveTo(cx + 58*s, baseY - 12*s, cx + 62*s, baseY + 6*s + armWR);
+  ctx.quadraticCurveTo(cx + 54*s, baseY + 16*s + armWR, cx + 44*s, baseY + 10*s);
+  ctx.quadraticCurveTo(cx + 36*s, baseY + 4*s, cx + 34*s, baseY - 8*s);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // 手
+  ctx.fillStyle = skinMid;
+  ctx.beginPath();
+  ctx.arc(cx - 55*s, baseY + 12*s + armWL, 8*s, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx + 55*s, baseY + 12*s + armWR, 8*s, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 头部 — 脸部
+  // ═══════════════════════════════════════════════
+  const hx = cx, hy = baseY - 90*s, hw = 78*s, hh = 82*s;
+
+  // 脸颊阴影
+  ctx.fillStyle = 'rgba(0,0,0,0.06)';
+  ctx.beginPath();
+  ctx.ellipse(hx + 2*s, hy + 2*s, hw*0.48, hh*0.48, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 脸部
+  const skinGrad = ctx.createRadialGradient(hx - 6*s, hy - 8*s, hw*0.05, hx, hy, hw*0.48);
+  skinGrad.addColorStop(0, skinLight);
+  skinGrad.addColorStop(0.7, skinMid);
+  skinGrad.addColorStop(1, skinDark);
+  ctx.fillStyle = skinGrad;
+  ctx.beginPath();
+  ctx.ellipse(hx, hy, hw*0.48, hh*0.48, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 耳朵
+  ctx.fillStyle = '#fae0cc';
+  ctx.beginPath();
+  ctx.ellipse(hx - hw*0.48, hy, 6*s, 10*s, -0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(hx + hw*0.48, hy, 6*s, 10*s, 0.2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 前发 — 刘海 + 侧发
+  // ═══════════════════════════════════════════════
+  ctx.fillStyle = hairPink;
+  ctx.beginPath();
+  ctx.moveTo(hx - hw*0.5, hy - hh*0.2);
+  ctx.quadraticCurveTo(hx - hw*0.55, hy - hh*0.45, hx - hw*0.2, hy - hh*0.5);
+  ctx.quadraticCurveTo(hx, hy - hh*0.55, hx + hw*0.2, hy - hh*0.5);
+  ctx.quadraticCurveTo(hx + hw*0.55, hy - hh*0.45, hx + hw*0.5, hy - hh*0.2);
+  ctx.quadraticCurveTo(hx + hw*0.45, hy - hh*0.35, hx + hw*0.3, hy - hh*0.15);
+  ctx.quadraticCurveTo(hx + hw*0.1, hy - hh*0.25, hx, hy - hh*0.18);
+  ctx.quadraticCurveTo(hx - hw*0.1, hy - hh*0.25, hx - hw*0.3, hy - hh*0.15);
+  ctx.quadraticCurveTo(hx - hw*0.45, hy - hh*0.35, hx - hw*0.5, hy - hh*0.2);
+  ctx.closePath();
+  ctx.fill();
+
+  // 刘海高光
+  ctx.fillStyle = '#fccdd8';
+  ctx.beginPath();
+  ctx.ellipse(hx - 12*s, hy - hh*0.4, 16*s, 6*s, -0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(hx + 10*s, hy - hh*0.42, 14*s, 5*s, 0.15, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 侧发
+  ctx.fillStyle = hairPink;
+  ctx.beginPath();
+  ctx.moveTo(hx - hw*0.4, hy - hh*0.15);
+  ctx.quadraticCurveTo(hx - hw*0.7, hy - hh*0.1, hx - hw*0.6, hy + hh*0.1);
+  ctx.quadraticCurveTo(hx - hw*0.45, hy + hh*0.25, hx - hw*0.3, hy + hh*0.1);
+  ctx.quadraticCurveTo(hx - hw*0.38, hy - hh*0.05, hx - hw*0.4, hy - hh*0.15);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(hx + hw*0.4, hy - hh*0.15);
+  ctx.quadraticCurveTo(hx + hw*0.7, hy - hh*0.1, hx + hw*0.6, hy + hh*0.1);
+  ctx.quadraticCurveTo(hx + hw*0.45, hy + hh*0.25, hx + hw*0.3, hy + hh*0.1);
+  ctx.quadraticCurveTo(hx + hw*0.38, hy - hh*0.05, hx + hw*0.4, hy - hh*0.15);
+  ctx.closePath(); ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 眼睛 — 日系动漫大眼
+  // ═══════════════════════════════════════════════
+  const eyeY = hy - 6*s, eyeSp = 22*s, eyeW = 20*s;
+  const eyeH = isBlinking ? 1.5*s : 24*s;
+
+  // 睫毛线
+  ctx.strokeStyle = '#3a2520';
+  ctx.lineWidth = 2 * s;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(hx - eyeSp - eyeW, eyeY - 2*s);
+  ctx.quadraticCurveTo(hx - eyeSp, eyeY - eyeH*0.6, hx - eyeSp + eyeW, eyeY - 2*s);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(hx + eyeSp - eyeW, eyeY - 2*s);
+  ctx.quadraticCurveTo(hx + eyeSp, eyeY - eyeH*0.6, hx + eyeSp + eyeW, eyeY - 2*s);
+  ctx.stroke();
+
+  if (!isBlinking) {
+    // 眼白
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.ellipse(hx - eyeSp, eyeY, eyeW, eyeH*0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(hx + eyeSp, eyeY, eyeW, eyeH*0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 虹膜 (渐变紫色)
+    const irisL = ctx.createRadialGradient(hx - eyeSp, eyeY + 3*s, eyeW*0.1, hx - eyeSp, eyeY + 3*s, eyeW*0.55);
+    irisL.addColorStop(0, eyePurple);
+    irisL.addColorStop(0.5, '#5b3fc0');
+    irisL.addColorStop(1, eyePurpleDark);
+    ctx.fillStyle = irisL;
+    ctx.beginPath();
+    ctx.ellipse(hx - eyeSp, eyeY + 3*s, eyeW*0.55, eyeH*0.35, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    const irisR = ctx.createRadialGradient(hx + eyeSp, eyeY + 3*s, eyeW*0.1, hx + eyeSp, eyeY + 3*s, eyeW*0.55);
+    irisR.addColorStop(0, eyePurple);
+    irisR.addColorStop(0.5, '#5b3fc0');
+    irisR.addColorStop(1, eyePurpleDark);
+    ctx.fillStyle = irisR;
+    ctx.beginPath();
+    ctx.ellipse(hx + eyeSp, eyeY + 3*s, eyeW*0.55, eyeH*0.35, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 瞳孔
+    const pupilOffX = Math.sin(animFrame * 0.04) * 1.5*s;
+    ctx.fillStyle = '#1a1040';
+    ctx.beginPath();
+    ctx.arc(hx - eyeSp + pupilOffX, eyeY + 3*s, eyeW*0.18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(hx + eyeSp + pupilOffX, eyeY + 3*s, eyeW*0.18, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 主高光
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(hx - eyeSp - 3*s, eyeY - 7*s, 5*s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(hx + eyeSp - 3*s, eyeY - 7*s, 5*s, 0, Math.PI * 2);
+    ctx.fill();
+    // 次高光
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.beginPath();
+    ctx.arc(hx - eyeSp + 6*s, eyeY - 2*s, 2.5*s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(hx + eyeSp + 6*s, eyeY - 2*s, 2.5*s, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 眉毛
+  ctx.strokeStyle = '#5a4030';
+  ctx.lineWidth = 1.8 * s;
+  ctx.beginPath();
+  ctx.moveTo(hx - eyeSp - eyeW*0.6, eyeY - eyeH*0.55);
+  ctx.quadraticCurveTo(hx - eyeSp, eyeY - eyeH*0.7, hx - eyeSp + eyeW*0.4, eyeY - eyeH*0.55);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(hx + eyeSp + eyeW*0.6, eyeY - eyeH*0.55);
+  ctx.quadraticCurveTo(hx + eyeSp, eyeY - eyeH*0.7, hx + eyeSp - eyeW*0.4, eyeY - eyeH*0.55);
+  ctx.stroke();
+
+  // ═══════════════════════════════════════════════
+  // 鼻子 + 嘴巴
+  // ═══════════════════════════════════════════════
+  ctx.fillStyle = '#e8c0a0';
+  ctx.beginPath();
+  ctx.arc(hx, hy + 6*s, 2.5*s, 0, Math.PI * 2);
+  ctx.fill();
+
+  // W 形可爱嘴
+  ctx.strokeStyle = '#d47878';
+  ctx.lineWidth = 1.5 * s;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(hx - 8*s, hy + 16*s);
+  ctx.quadraticCurveTo(hx - 3*s, hy + 18*s, hx, hy + 15*s);
+  ctx.quadraticCurveTo(hx + 3*s, hy + 18*s, hx + 8*s, hy + 16*s);
+  ctx.stroke();
+
+  // ═══════════════════════════════════════════════
+  // 腮红
+  // ═══════════════════════════════════════════════
+  const blushGradL = ctx.createRadialGradient(hx - eyeSp - 6*s, hy + 10*s, 1*s, hx - eyeSp - 6*s, hy + 10*s, 13*s);
+  blushGradL.addColorStop(0, 'rgba(255, 150, 150, 0.45)');
+  blushGradL.addColorStop(1, 'rgba(255, 150, 150, 0)');
+  ctx.fillStyle = blushGradL;
+  ctx.beginPath();
+  ctx.ellipse(hx - eyeSp - 6*s, hy + 10*s, 12*s, 7*s, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  const blushGradR = ctx.createRadialGradient(hx + eyeSp + 6*s, hy + 10*s, 1*s, hx + eyeSp + 6*s, hy + 10*s, 13*s);
+  blushGradR.addColorStop(0, 'rgba(255, 150, 150, 0.45)');
+  blushGradR.addColorStop(1, 'rgba(255, 150, 150, 0)');
+  ctx.fillStyle = blushGradR;
+  ctx.beginPath();
+  ctx.ellipse(hx + eyeSp + 6*s, hy + 10*s, 12*s, 7*s, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 粉色蝴蝶结发饰
+  // ═══════════════════════════════════════════════
+  const bx = hx + hw*0.35, by = hy - hh*0.32;
+  ctx.fillStyle = '#ff6b8a';
+  ctx.beginPath();
+  ctx.ellipse(bx - 12*s, by, 13*s, 8*s, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(bx + 12*s, by, 13*s, 8*s, 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ff4060';
+  ctx.beginPath();
+  ctx.arc(bx, by, 5*s, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ff6b8a';
+  ctx.beginPath();
+  ctx.moveTo(bx - 4*s, by + 3*s);
+  ctx.quadraticCurveTo(bx - 14*s, by + 18*s, bx - 8*s, by + 24*s);
+  ctx.quadraticCurveTo(bx - 2*s, by + 12*s, bx - 4*s, by + 3*s);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(bx + 4*s, by + 3*s);
+  ctx.quadraticCurveTo(bx + 14*s, by + 18*s, bx + 8*s, by + 24*s);
+  ctx.quadraticCurveTo(bx + 2*s, by + 12*s, bx + 4*s, by + 3*s);
+  ctx.fill();
+
+  // ═══════════════════════════════════════════════
+  // 颈部
+  // ═══════════════════════════════════════════════
+  ctx.fillStyle = '#fae0cc';
+  ctx.beginPath();
+  ctx.moveTo(hx - 10*s, hy + hh*0.42);
+  ctx.lineTo(hx - 8*s, baseY - 50*s);
+  ctx.lineTo(hx + 8*s, baseY - 50*s);
+  ctx.lineTo(hx + 10*s, hy + hh*0.42);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+
+  if (placeholder.style.display !== 'none') {
+    placeholder.style.display = 'none';
+  }
+}
+
+// ── 动画循环 ──
+function animateLoop() {
+  if (mode === 'canvas') drawCanvasPet();
+  requestAnimationFrame(animateLoop);
+}
+
+// ── 暴露给 Python 的 API ──
+function showSpeechBubble(text) {
+  const displayText = text.length > 80 ? text.substring(0, 78) + '\u2026' : text;
+  bubble.textContent = displayText;
+  bubble.classList.add('show');
+  clearTimeout(speechTimer);
+  speechTimer = setTimeout(function() { bubble.classList.remove('show'); }, 8000);
+}
+
+function hideSpeechBubble() {
+  bubble.classList.remove('show');
+}
+
+function setAnimationMode(newMode) {
+  mode = newMode;
+  if (newMode === 'live2d') {
+    placeholder.style.display = 'flex';
+    placeholder.textContent = 'Live2D \u6a21\u578b\u52a0\u8f7d\u4e2d...';
+  }
+}
+
+// ── 启动 ──
+if (typeof QWebChannel !== 'undefined') {
+  placeholder.textContent = '\u6b63\u5728\u8fde\u63a5...';
+} else {
+  animateLoop();
+}
+</script>
+</body>
+</html>

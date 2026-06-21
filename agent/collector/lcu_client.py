@@ -25,6 +25,7 @@ import base64
 import json
 import logging
 import os
+import re
 import ssl
 import threading
 import time
@@ -37,6 +38,7 @@ logger = logging.getLogger("collector.lcu_client")
 
 # lockfile 常见路径
 _LOCKFILE_PATHS = [
+    r"D:\WeGameApps\英雄联盟\Riot Client Data\User Data\Config\lockfile",  # WeGame 国服（正确位置）
     os.path.expandvars(r"%LOCALAPPDATA%\Riot Games\Riot Client\Config\lockfile"),
     os.path.expandvars(r"%LOCALAPPDATA%\Riot Games\League of Legends\lockfile"),
     r"C:\Riot Games\League of Legends\lockfile",
@@ -170,42 +172,98 @@ class LCUClientCollector:
             time.sleep(self._poll_interval)
 
     def _try_connect(self):
-        """尝试找到 lockfile 并连接 LCU API."""
+        """尝试找到 lockfile 或读取进程命令行来连接 LCU API."""
+        # 方法 1：尝试 lockfile
         lockfile_path = None
         for p in _LOCKFILE_PATHS:
             if os.path.exists(p):
                 lockfile_path = p
                 break
 
-        if not lockfile_path:
-            logger.debug("Lockfile not found")
+        if lockfile_path:
+            if self._try_connect_with_lockfile(lockfile_path):
+                return
+
+        # 方法 2：从 LeagueClientUx.exe 进程命令行提取凭据（国服/新版客户端）
+        if self._try_connect_from_process():
             return
 
+    def _try_connect_with_lockfile(self, lockfile_path: str) -> bool:
+        """通过 lockfile 连接 LCU API."""
         try:
             with open(lockfile_path, "r") as f:
                 content = f.read().strip()
-            # 格式: LeagueClient:port:password:protocol
+            logger.info("Lockfile found: %s (size=%d)", lockfile_path, len(content))
             parts = content.split(":")
             if len(parts) < 4:
-                return
-            self._port = int(parts[2])
-            self._password = parts[3]
-            self._base_url = f"https://127.0.0.1:{self._port}"
-            auth_raw = f"riot:{self._password}"
-            self._auth_header = "Basic " + base64.b64encode(auth_raw.encode()).decode()
-        except Exception:
-            logger.debug("Lockfile parse failed")
-            return
+                logger.debug("Lockfile format invalid: %d parts", len(parts))
+                return False
+            port = int(parts[2])
+            password = parts[3]
+            if not self._connect_lcu(port, password):
+                return False
+            logger.info("LCU API connected via lockfile (port=%d)", port)
+            return True
+        except Exception as e:
+            logger.debug("Lockfile parse failed: %s", e)
+            return False
 
-        # 测试连接
+    def _try_connect_from_process(self) -> bool:
+        """通过 psutil 读取 LeagueClientUx.exe 命令行提取 LCU 凭据."""
+        try:
+            import psutil
+        except ImportError:
+            logger.debug("psutil not installed, skipping process-based LCU discovery")
+            return False
+
+        try:
+            for proc in psutil.process_iter(["name", "cmdline"]):
+                try:
+                    info = proc.info
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+                if info["name"] != "LeagueClientUx.exe":
+                    continue
+                cmdline = info["cmdline"] or []
+                # Parse --app-port and --remoting-auth-token
+                port = None
+                token = None
+                for arg in cmdline:
+                    m = re.match(r"--app-port=(\d+)", arg)
+                    if m:
+                        port = int(m.group(1))
+                    m = re.match(r"--remoting-auth-token=(\S+)", arg)
+                    if m:
+                        token = m.group(1)
+                if port and token:
+                    logger.info("LCU discovered from LeagueClientUx.exe: port=%d", port)
+                    if self._connect_lcu(port, token):
+                        logger.info("LCU API connected via process (port=%d)", port)
+                        return True
+                    return False
+        except Exception as e:
+            logger.debug("Process-based LCU discovery failed: %s", e)
+        return False
+
+    def _connect_lcu(self, port: int, password: str) -> bool:
+        """建立 LCU API 连接."""
+        self._port = port
+        self._password = password
+        self._base_url = f"https://127.0.0.1:{port}"
+        auth_raw = f"riot:{password}"
+        self._auth_header = "Basic " + base64.b64encode(auth_raw.encode()).decode()
+
         try:
             resp = self._get("/lol-summoner/v1/current-summoner")
             if resp:
                 self._connected = True
                 self._callback("lcu_connected", {"summoner": resp})
-                logger.info("LCU API connected (port=%d)", self._port)
-        except Exception:
-            pass
+                return True
+            else:
+                logger.debug("LCU API test: empty response")
+        except Exception as e:
+            logger.debug("LCU API test failed: %s", e)
+        return False
 
     def _poll_data(self):
         """轮询各 LCU 端点，检测变化并回调."""

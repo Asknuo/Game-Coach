@@ -141,7 +141,13 @@ async def overlay_ws(websocket: WebSocket):
         # 保持连接，接收心跳或静音指令
         while True:
             data = await websocket.receive_text()
-            # 可扩展：mute/unmute 等指令
+            # 心跳消息，跳过
+            try:
+                msg = __import__("json").loads(data)
+                if msg.get("type") == "ping":
+                    continue
+            except Exception:
+                pass
             logger.debug("overlay msg: %s", data[:50])
     except WebSocketDisconnect:
         pass

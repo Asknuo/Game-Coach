@@ -97,7 +97,8 @@ class CollectorBridge:
 
         elif event_type == "lcu_connected":
             self.lcu_connected = True
-            display = payload.get("summoner", {}).get("displayName", "?")
+            summoner = payload.get("summoner", {})
+            display = summoner.get("displayName") or summoner.get("gameName") or "?"
             logger.info("LCU 已连接 — 召唤师: %s", display)
 
         elif event_type == "lcu_game_start":
