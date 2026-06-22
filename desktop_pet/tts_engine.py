@@ -1,6 +1,6 @@
 """
 TTS 引擎 — Edge TTS (首选) + pyttsx3 (回退)
-从原 companion.py 移植并适配 PyQt6 异步模型。
+Edge TTS 优先，pyttsx3 离线回退，适配 PyQt6 异步模型。
 """
 
 import asyncio
@@ -9,8 +9,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 
 logger = logging.getLogger("desktop_pet.tts")
 
@@ -33,6 +31,13 @@ except ImportError:
 # ── 配置 ─────────────────────────────────────────
 EDGE_VOICE = os.getenv("EDGE_VOICE", "zh-CN-XiaoxiaoNeural")
 EDGE_RATE = os.getenv("EDGE_RATE", "+15%")
+
+
+def _temp_mp3_path() -> str:
+    """分配临时 mp3 路径（同步，在 asyncio.run 之前调用）。"""
+    fd, path = tempfile.mkstemp(suffix=".mp3")
+    os.close(fd)
+    return path
 
 
 # ── 音频播放工具 ──────────────────────────────────
@@ -68,26 +73,22 @@ class EdgeTTSEngine:
     def speak(self, text: str):
         if self.muted or not HAS_EDGE_TTS:
             return
+        tmp_path = _temp_mp3_path()
         try:
-            asyncio.run(self._speak_async(text))
+            asyncio.run(self._speak_async(text, tmp_path))
         except Exception as e:
             logger.debug("Edge TTS failed: %s", e)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
-    async def _speak_async(self, text: str):
+    async def _speak_async(self, text: str, tmp_path: str):
         try:
             communicate = edge_tts.Communicate(text, EDGE_VOICE, rate=EDGE_RATE)
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                tmp_path = f.name
             await communicate.save(tmp_path)
             _play_audio_file(tmp_path)
-            # 延迟删除临时文件
-            def _cleanup():
-                time.sleep(2)
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-            threading.Thread(target=_cleanup, daemon=True).start()
         except Exception as e:
             logger.debug("Edge TTS async failed: %s", e)
 

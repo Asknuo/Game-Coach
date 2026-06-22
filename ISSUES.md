@@ -420,6 +420,18 @@
 
 ---
 
+## 八-B、桌宠 UX 修复 (2026-06-22)
+
+### #55 companion.py 退出未停止 WebSocket 线程 + 无边框窗口无法快捷关闭
+- **文件**: `agent/companion.py`
+- **问题**: 右键「退出」只 `destroy()` tk 窗口，后台 `TipClient` 线程仍在 3 秒重连循环；无边框窗口无关闭按钮，只能右键菜单退出
+- **修复**:
+  - `DesktopPet` 保存 `_client` 引用，`_quit()` 时调用 `TipClient.stop()` 再销毁窗口
+  - 双击画布触发 `_quit()`，作为快捷退出方式
+- **日期**: 2026-06-22
+
+---
+
 ## 九、优化后的数据流
 
 ```
@@ -466,7 +478,7 @@ LangGraph 8节点流水线:
 
 ---
 
-## 七、修改文件清单
+## 十、修改文件清单
 
 | 文件 | 涉及问题 | 改动性质 |
 |------|---------|---------|
@@ -477,12 +489,12 @@ LangGraph 8节点流水线:
 | `agent/detector.py` | #10 | **新建后删除**：独立事件检测模块（全部迁移到 Go） |
 | `agent/map_zones.py` | #15 | **新建**：坐标→区域语义解析 |
 | `agent/graph/nodes.py` | #5 #6 #9 #14 #20 #36 #37 #38 | 坐标/泉水校验、上下文抑制、时效性、kill RAG、health 键名、信号分类补齐 10 种事件 |
-| `agent/models/state.py` | #5 #16 #18 #19 #24 #39 | 坐标工具函数、模型字段补齐（Player 6 字段 + ActivePlayer team/items + GameEvent dragon_type）+ sync_active_player |
+| `agent/models/state.py` | #5 #16 #18 #19 #24 #39 #54 | 坐标工具函数、模型字段补齐（Player 6 字段 + ActivePlayer team/items + GameEvent dragon_type）+ sync_active_player + field_validator null→[] |
 | `agent/memory/models.py` | #17 | UserContext 添加 context 字段 |
 | `agent/memory/queue.py` | #4 | 紧急事件防御过滤 |
 | `agent/memory/redis_store.py` | #13 | 反馈闭环追踪 |
 | `agent/memory/injector.py` | #15 | 区域信息注入 |
-| `agent/companion.py` | #11 #41 #48 | Edge TTS 三级链路、线程传参 lambda 闭包、WebSocket recv 超时修复 |
+| `agent/companion.py` | #11 #41 #48 #55 | Edge TTS 三级链路、线程传参 lambda 闭包、WebSocket recv 超时修复、退出时停止 WS 线程 + 双击退出 |
 | `agent/knowledge/chroma_store.py` | #12 | 知识库新鲜度检查 |
 | `agent/knowledge/ingest.py` | #3 #12 | 兼容新旧格式、摄入时间戳 |
 | `agent/knowledge/data_fetcher.py` | #3 | items 保存格式 |
@@ -494,12 +506,12 @@ LangGraph 8节点流水线:
 | `agent/skills/build/gotchas.md` | #2 | 敌方装备坑点 |
 | `collector/cmd/main.go` | #26 #32 | 失败时重置 engine、POLL_INTERVAL 警告日志 |
 | `collector/config/config.yaml` | #45 | WeGame 国服 lockfile_path 默认值 |
-| `collector/internal/lol/parser.go` | #27 #40 | Player 结构体扩展字段、ActivePlayer 补齐 items 解析 |
+| `collector/internal/lol/parser.go` | #27 #40 #54 | Player 结构体扩展字段、ActivePlayer 补齐 items 解析、AllPlayers/Events 空切片初始化防 null |
 | `collector/internal/lol/state.go` | #10 | ActivePlayerFromAll 辅助方法 |
 | `collector/internal/lol/client.go` | #30 #31 #45 | available → atomic.Bool、FetchGameState 传递 context、WeGame 国服 lockfile 路径 |
 | `collector/internal/lol/objectives.go` | #33 | Enrich 入口置 nil 防止旧值残留 |
 | `collector/internal/event/detector.go` | #10 #23 #27 #29 | 事件检测统一、firstTickInit、敌方经济追踪、goldSpike 永久失效 |
 | `collector/internal/event/engine.go` | #21 #22 #26 | 两遍冷却去重、death 冷却移除、Reset 方法 |
-| `collector/internal/sender/websocket.go` | #25 #28 #34 #44 | writeMu/readMu 拆分、SetReadDeadline 并发保护、Connect 锁降级、ringBuffer drainSince mutex panic 修复 |
+| `collector/internal/sender/websocket.go` | #25 #28 #34 #44 #53 | writeMu/readMu 拆分、SetReadDeadline 并发保护、Connect 锁降级、ringBuffer drainSince mutex panic 修复、send 失败时置 nil 防并发死连接写入 |
 | `collector/internal/lcu/client.go` | #50 #52 | lockfile Riot Client 格式跳过、进程发现 WMIC→PowerShell 回退 |
 | `collector/internal/lcu/poller.go` | #51 | displayName→gameName 国服兜底、strValOr 辅助函数 |

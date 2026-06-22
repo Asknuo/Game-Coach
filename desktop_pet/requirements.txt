@@ -1,0 +1,4 @@
+PyQt6>=6.6.0
+websocket-client>=1.8.0
+edge-tts>=6.1.0
+pyttsx3>=2.90

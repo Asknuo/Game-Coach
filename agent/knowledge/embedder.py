@@ -47,7 +47,7 @@ class Embedder:
             self._backend = "volces"
             self._endpoint = self.base_url
             self.available = True
-            logger.info("Embedder: Volces/Doubao backend, model=%s", self.model)
+            logger.debug("Embedder: Volces/Doubao backend, model=%s", self.model)
         else:
             try:
                 from openai import OpenAI
@@ -57,7 +57,7 @@ class Embedder:
                     kwargs["base_url"] = self.base_url
                 self._client = OpenAI(**kwargs)
                 self.available = True
-                logger.info("Embedder: OpenAI backend, model=%s", self.model)
+                logger.debug("Embedder: OpenAI backend, model=%s", self.model)
             except Exception:
                 logger.exception("OpenAI Embedder init failed")
 
@@ -120,6 +120,22 @@ class Embedder:
 
         return [results[i] for i in range(len(texts))]
 
+    @staticmethod
+    def _parse_volces_embedding(data: dict) -> list[float] | None:
+        """从火山引擎响应 JSON 中提取 embedding 向量。"""
+        result_data = data.get("data", {})
+        if isinstance(result_data, dict):
+            emb = result_data.get("embedding")
+            if emb is not None:
+                return emb
+        elif isinstance(result_data, list):
+            for item in result_data:
+                if isinstance(item, dict):
+                    emb = item.get("embedding")
+                    if emb is not None:
+                        return emb
+        return data.get("embedding")
+
     def _embed_volces_single(self, text: str) -> list[float] | None:
         """发送单条文本获取 embedding。"""
         payload = json.dumps({
@@ -145,19 +161,9 @@ class Embedder:
 
         try:
             data = json.loads(raw)
-            result_data = data.get("data", {})
-            if isinstance(result_data, dict):
-                emb = result_data.get("embedding")
-                if emb is not None:
-                    return emb
-            elif isinstance(result_data, list):
-                for item in result_data:
-                    if isinstance(item, dict):
-                        emb = item.get("embedding")
-                        if emb is not None:
-                            return emb
-            if "embedding" in data:
-                return data["embedding"]
+            emb = self._parse_volces_embedding(data)
+            if emb is not None:
+                return emb
             logger.warning("Volces: unexpected response format, raw=%s", raw[:500])
             return None
         except Exception:

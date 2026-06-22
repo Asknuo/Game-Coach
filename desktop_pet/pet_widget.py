@@ -1,311 +1,240 @@
 """
-Pet Widget — 纯 QWidget + QPainter 手绘角色。
-
-用 QPainter 代替 QWebEngineView 画角色：
-- 无 Chromium 子窗口劫持鼠标 → 拖拽 100% 可用
-- 轻量，无需 QWebEngine 依赖
+Pet Widget — 白蛋 + 眼睛（极简桌宠）。
 """
 
 import math
-import sys
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF
-from PyQt6.QtGui import (
-    QPainter, QPainterPath, QColor, QLinearGradient, QRadialGradient,
-    QPen, QFont, QMouseEvent,
-)
-from PyQt6.QtWidgets import QWidget, QLabel, QVBoxLayout
+
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt6.QtGui import QPainter, QPen, QColor, QRadialGradient
+from PyQt6.QtWidgets import QWidget, QLabel
 
 
 class PetWidget(QWidget):
-    """桌面宠物角色组件 — QPainter 手绘，简洁可爱。"""
+    """极简桌宠：白蛋 + 眼睛。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setMouseTracking(True)
 
-        # 动画状态
         self._frame = 0
         self._bob = 0.0
-        self._blink_timer = 0
-        self._blink_threshold = 200
-        self._blinking = False
+        self._blink = 0.0
+        self._blink_cd = 90
+        self._dragging = False
+        self._speaking = False
 
-        # 说话气泡
-        self._bubble_text = ""
-        self._show_bubble = False
         self._bubble_label = QLabel(self)
         self._bubble_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._bubble_label.setStyleSheet("""
             QLabel {
-                background: rgba(24, 32, 52, 0.92);
-                border: 1px solid rgba(120, 100, 180, 0.5);
-                border-radius: 12px;
-                padding: 8px 14px;
-                color: #e8e0f0;
-                font-size: 12px;
+                background: rgba(255, 255, 255, 0.95);
+                border: 1px solid rgba(203, 213, 225, 0.9);
+                border-radius: 10px;
+                padding: 6px 10px;
+                color: #334155;
+                font-size: 11px;
                 font-family: "Microsoft YaHei";
             }
         """)
         self._bubble_label.setWordWrap(True)
+        self._bubble_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+        )
         self._bubble_label.hide()
+
         self._bubble_timer = QTimer(self)
-        self._bubble_timer.timeout.connect(self._hide_bubble)
+        self._bubble_timer.timeout.connect(self._on_bubble_hide)
         self._bubble_timer.setSingleShot(True)
 
-        # 动画定时器
+        self._speak_timer = QTimer(self)
+        self._speak_timer.setSingleShot(True)
+        self._speak_timer.timeout.connect(self._on_speak_end)
+
         self._anim_timer = QTimer(self)
         self._anim_timer.timeout.connect(self._tick)
-        self._anim_timer.start(33)  # ~30fps
+        self._anim_timer.start(40)
 
-    # ──── 公开 API ────────────────
+    def set_pose(self, pose: str) -> None:
+        self._dragging = pose == "drag"
+        self.update()
 
     def say(self, text: str, duration_ms: int = 5000):
-        """显示对话气泡。"""
         display = text[:80] + "…" if len(text) > 80 else text
         self._bubble_label.setText(display)
         self._bubble_label.adjustSize()
-        # place bubble above the character
-        bw = self._bubble_label.width()
-        self._bubble_label.move(
-            (self.width() - bw) // 2,
-            max(4, self.height() // 20),
-        )
+        bw = min(self._bubble_label.width(), self.width() - 12)
+        self._bubble_label.setFixedWidth(bw)
+        self._bubble_label.move((self.width() - bw) // 2, 4)
         self._bubble_label.show()
         self._bubble_label.raise_()
         self._bubble_timer.start(duration_ms)
+        self._speaking = True
+        self._speak_timer.start(min(duration_ms, 5000))
 
-    def _hide_bubble(self):
+    def _on_bubble_hide(self):
         self._bubble_label.hide()
+
+    def _on_speak_end(self):
+        self._speaking = False
 
     def stop(self):
         self._anim_timer.stop()
 
-    # ──── 动画 ─────────────────────
-
     def _tick(self):
-        self._frame = (self._frame + 1) % 100000
-        self._bob = math.sin(self._frame * 0.025) * 3
+        self._frame += 1
+        self._bob = math.sin(self._frame * 0.07) * 2
 
-        self._blink_timer += 1
-        if self._blink_timer > self._blink_threshold:
-            self._blinking = True
-        if self._blink_timer > self._blink_threshold + 5:
-            self._blink_timer = 0
-            self._blinking = False
-            self._blink_threshold = 170 + (self._frame % 130)
+        if self._blink > 0:
+            self._blink = max(0.0, self._blink - 0.22)
+        else:
+            self._blink_cd -= 1
+            if self._blink_cd <= 0:
+                self._blink = 1.0
+                self._blink_cd = 85 + (self._frame % 50)
 
         self.update()
 
-    # ──── 绘制 ─────────────────────
+    def _gaze_offset(self, s: float) -> tuple[float, float]:
+        if self._dragging:
+            return 3.5 * s, 1.2 * s
+        if self._speaking:
+            pulse = math.sin(self._frame * 0.25) * 0.6 * s
+            return pulse, -1.5 * s
+        lx = math.sin(self._frame * 0.04) * 2.2 * s
+        ly = math.sin(self._frame * 0.031 + 1.2) * 1.6 * s
+        return lx, ly
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         w, h = self.width(), self.height()
-        s = min(w, h) / 300  # 比例因子
-
+        s = min(w, h) / 140.0
         cx = w / 2
-        base = h * 0.65 + self._bob
-        hair_sway = math.cos(self._frame * 0.02) * 2 * s
-        arm_sway = math.sin(self._frame * 0.03) * 3 * s
+        cy = h * 0.55 + self._bob
+        rx, ry = 46 * s, 58 * s
 
-        # ── 颜色定义 ──
-        C = {
-            "skin": QColor(255, 242, 235),
-            "skin_d": QColor(245, 218, 200),
-            "hair": QColor(70, 45, 100),
-            "hair_l": QColor(115, 80, 155),
-            "eye_w": QColor(255, 255, 255),
-            "eye_i": QColor(80, 180, 240),
-            "eye_p": QColor(10, 10, 30),
-            "blush": QColor(255, 160, 150, 100),
-            "dress": QColor(240, 235, 250),
-            "dress_d": QColor(70, 55, 120),
-            "ribbon": QColor(220, 60, 60),
-            "shoe": QColor(60, 40, 20),
-            "mouth": QColor(200, 80, 80),
-        }
+        if self._dragging:
+            p.save()
+            p.translate(cx, cy)
+            p.rotate(-6)
+            p.translate(-cx, -cy)
 
-        def _r(x, y, rr):
-            """椭圆半径从中心。"""
-            return QRectF(x - rr[0], y - rr[1], rr[0] * 2, rr[1] * 2)
+        self._draw_shadow(p, cx, cy + ry * 0.85, rx)
+        self._draw_egg(p, cx, cy, rx, ry)
+        self._draw_eyes(p, cx, cy, rx, ry, s)
 
-        def _draw_ellipse(ox, oy, rx, ry, color, angle=0):
-            painter.save()
-            painter.translate(ox, oy)
-            if angle:
-                painter.rotate(angle)
-            painter.setBrush(color)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(_r(0, 0, (rx, ry)))
-            painter.restore()
+        if self._dragging:
+            self._draw_wobble_lines(p, cx, cy, s)
+            p.restore()
 
-        # ═══════════════════════
-        # 身体 (小裙子)
-        # ═══════════════════════
-        body_y = base + 20 * s
+        p.end()
 
-        # 腿
-        _draw_ellipse(cx - 22 * s, body_y + 10 * s, 6 * s, 16 * s, C["skin"])
-        _draw_ellipse(cx + 22 * s, body_y + 10 * s, 6 * s, 16 * s, C["skin"])
+    @staticmethod
+    def _oval(p: QPainter, cx: float, cy: float, rx: float, ry: float):
+        p.drawEllipse(QRectF(cx - rx, cy - ry, rx * 2, ry * 2))
 
-        # 鞋子
-        _draw_ellipse(cx - 24 * s, body_y + 28 * s, 10 * s, 5 * s, C["shoe"])
-        _draw_ellipse(cx + 24 * s, body_y + 28 * s, 10 * s, 5 * s, C["shoe"])
+    def _draw_shadow(self, p: QPainter, cx: float, cy: float, rx: float):
+        g = QRadialGradient(cx, cy, rx * 0.9)
+        g.setColorAt(0, QColor(0, 0, 0, 45))
+        g.setColorAt(1, QColor(0, 0, 0, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        self._oval(p, cx, cy, rx * 0.75, rx * 0.18)
 
-        # 裙子
-        skirt_path = QPainterPath()
-        skirt_path.moveTo(cx - 28 * s, body_y - 12 * s)
-        skirt_path.quadTo(cx - 38 * s, body_y, cx - 42 * s, body_y + 14 * s)
-        skirt_path.quadTo(cx, body_y + 20 * s, cx + 42 * s, body_y + 14 * s)
-        skirt_path.quadTo(cx + 38 * s, body_y, cx + 28 * s, body_y - 12 * s)
-        skirt_path.closeSubpath()
-        painter.setBrush(C["dress_d"])
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawPath(skirt_path)
+    def _draw_egg(self, p: QPainter, cx: float, cy: float, rx: float, ry: float):
+        grad = QRadialGradient(cx - rx * 0.25, cy - ry * 0.35, rx * 1.4)
+        grad.setColorAt(0, QColor(255, 255, 255))
+        grad.setColorAt(0.7, QColor(248, 250, 252))
+        grad.setColorAt(1, QColor(226, 232, 240))
 
-        # 上衣
-        body_path = QPainterPath()
-        body_path.moveTo(cx - 18 * s, body_y - 32 * s)
-        body_path.quadTo(cx - 22 * s, body_y - 8 * s, cx - 26 * s, body_y - 10 * s)
-        body_path.lineTo(cx + 26 * s, body_y - 10 * s)
-        body_path.quadTo(cx + 22 * s, body_y - 8 * s, cx + 18 * s, body_y - 32 * s)
-        body_path.quadTo(cx, body_y - 38 * s, cx - 18 * s, body_y - 32 * s)
-        body_path.closeSubpath()
-        painter.setBrush(C["dress"])
-        painter.drawPath(body_path)
+        p.setPen(QPen(QColor(203, 213, 225), max(1.2, rx * 0.04)))
+        p.setBrush(grad)
+        self._oval(p, cx, cy, rx, ry)
 
-        # 手臂
-        _draw_ellipse(cx - 34 * s + arm_sway, body_y - 22 * s, 5 * s, 14 * s,
-                      C["skin"], -10)
-        _draw_ellipse(cx + 34 * s - arm_sway, body_y - 22 * s, 5 * s, 14 * s,
-                      C["skin"], 10)
+        hi = QRadialGradient(cx - rx * 0.35, cy - ry * 0.45, rx * 0.45)
+        hi.setColorAt(0, QColor(255, 255, 255, 180))
+        hi.setColorAt(1, QColor(255, 255, 255, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(hi)
+        self._oval(p, cx - rx * 0.15, cy - ry * 0.25, rx * 0.35, ry * 0.22)
 
-        # ═══════════════════════
-        # 头
-        # ═══════════════════════
-        head_y = body_y - 32 * s - 48 * s
-        head_rx, head_ry = 48 * s, 48 * s
+    def _draw_eyes(self, p: QPainter, cx: float, cy: float, rx: float, ry: float, s: float):
+        eye_y = cy - ry * 0.06
+        eye_dx = rx * 0.30
+        scale = 1.12 if self._speaking else 1.0
+        eye_rx = rx * 0.15 * scale
+        eye_ry = rx * 0.17 * scale
+        gaze_x, gaze_y = self._gaze_offset(s)
 
-        # 头发 (后面部分)
-        hair_path = QPainterPath()
-        hair_path.moveTo(cx - 52 * s, head_y + 5 * s)
-        hair_path.quadTo(cx - 58 * s, head_y + 15 * s, cx - 48 * s, head_y + 35 * s)
-        hair_path.quadTo(cx - 20 * s, head_y + 55 * s, cx, head_y + 50 * s)
-        hair_path.quadTo(cx + 20 * s, head_y + 55 * s, cx + 48 * s, head_y + 35 * s)
-        hair_path.quadTo(cx + 58 * s, head_y + 15 * s, cx + 52 * s, head_y + 5 * s)
-        hair_path.quadTo(cx + 48 * s, head_y - 48 * s, cx + 20 * s, head_y - 52 * s)
-        hair_path.quadTo(cx, head_y - 56 * s, cx - 20 * s, head_y - 52 * s)
-        hair_path.quadTo(cx - 48 * s, head_y - 48 * s, cx - 52 * s, head_y + 5 * s)
-        hair_path.closeSubpath()
-        painter.setBrush(C["hair"])
-        painter.drawPath(hair_path)
+        for side in (-1, 1):
+            ex = cx + side * eye_dx
+            self._draw_one_eye(p, ex, eye_y, eye_rx, eye_ry, gaze_x, gaze_y, s)
 
-        # 脸
-        _draw_ellipse(cx, head_y, head_rx, head_ry, C["skin"])
+    def _draw_one_eye(
+        self,
+        p: QPainter,
+        ex: float,
+        ey: float,
+        eye_rx: float,
+        eye_ry: float,
+        gaze_x: float,
+        gaze_y: float,
+        s: float,
+    ):
+        open_amt = 1.0 - min(self._blink, 1.0)
 
-        # 刘海
-        bang_path = QPainterPath()
-        bang_path.moveTo(cx - 48 * s, head_y - 10 * s)
-        bang_path.quadTo(cx - 40 * s, head_y - 46 * s, cx - 12 * s, head_y - 52 * s)
-        bang_path.quadTo(cx, head_y - 56 * s, cx + 12 * s, head_y - 52 * s)
-        bang_path.quadTo(cx + 40 * s, head_y - 46 * s, cx + 48 * s, head_y - 10 * s)
-        bang_path.quadTo(cx + 35 * s, head_y - 20 * s, cx + 10 * s, head_y - 8 * s)
-        bang_path.quadTo(cx, head_y - 2 * s, cx - 10 * s, head_y - 8 * s)
-        bang_path.quadTo(cx - 35 * s, head_y - 20 * s, cx - 48 * s, head_y - 10 * s)
-        bang_path.closeSubpath()
-        painter.setBrush(C["hair"])
-        painter.drawPath(bang_path)
+        if open_amt < 0.12:
+            p.setPen(QPen(QColor(71, 85, 105), max(1.8, 2 * s), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(QPointF(ex - eye_rx * 0.7, ey), QPointF(ex + eye_rx * 0.7, ey))
+            return
 
-        # 侧面头发
-        _draw_ellipse(cx - 46 * s, head_y + 12 * s, 8 * s, 16 * s, C["hair"])
-        _draw_ellipse(cx + 46 * s, head_y + 12 * s, 8 * s, 16 * s, C["hair"])
+        p.save()
+        p.translate(ex, ey)
+        p.scale(1.0, open_amt)
+        p.translate(-ex, -ey)
 
-        # ═══════════════════════
-        # 五官
-        # ═══════════════════════
+        p.setPen(QPen(QColor(148, 163, 184), max(1.0, 1.2 * s)))
+        p.setBrush(Qt.GlobalColor.white)
+        self._oval(p, ex, ey, eye_rx, eye_ry)
 
-        eye_y = head_y - 6 * s
-        eye_sp = 18 * s
-        eye_w, eye_h = 16 * s, (1.5 if self._blinking else 20) * s
+        iris_rx = eye_rx * 0.62
+        iris_ry = eye_ry * 0.68
+        ix = ex + gaze_x * 0.35
+        iy = ey + gaze_y * 0.35 + eye_ry * 0.06
 
-        # 眼白
-        _draw_ellipse(cx - eye_sp, eye_y, eye_w, eye_h * 0.6, C["eye_w"])
-        _draw_ellipse(cx + eye_sp, eye_y, eye_w, eye_h * 0.6, C["eye_w"])
+        iris_grad = QRadialGradient(ix - iris_rx * 0.15, iy - iris_ry * 0.2, iris_rx)
+        iris_grad.setColorAt(0, QColor(147, 197, 253))
+        iris_grad.setColorAt(0.55, QColor(96, 165, 250))
+        iris_grad.setColorAt(1, QColor(59, 130, 246))
 
-        if not self._blinking:
-            # 虹膜 (渐变)
-            for side in [-1, 1]:
-                x = cx + side * eye_sp
-                grad = QRadialGradient(x + 2 * s, eye_y + 4 * s, eye_w * 0.7)
-                grad.setColorAt(0, QColor(100, 200, 255))
-                grad.setColorAt(0.6, QColor(20, 100, 180))
-                grad.setColorAt(1, QColor(5, 20, 60))
-                painter.setBrush(grad)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.drawEllipse(_r(x + 1 * s, eye_y + 4 * s, (eye_w * 0.45, eye_h * 0.35)))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(iris_grad)
+        self._oval(p, ix, iy, iris_rx, iris_ry)
 
-                # 瞳孔
-                painter.setBrush(C["eye_p"])
-                painter.drawEllipse(_r(x + 2 * s, eye_y + 3 * s, (eye_w * 0.12, eye_w * 0.12)))
+        pupil_r = iris_rx * (0.42 if self._speaking else 0.36)
+        px = ix + gaze_x * 0.45
+        py = iy + gaze_y * 0.45
+        p.setBrush(QColor(15, 23, 42))
+        self._oval(p, px, py, pupil_r, pupil_r * 1.05)
 
-                # 高光
-                painter.setBrush(C["eye_w"])
-                painter.drawEllipse(_r(x - 3 * s, eye_y - 7 * s, (4.5 * s, 4.5 * s)))
-                painter.drawEllipse(_r(x + 5 * s, eye_y + 1 * s, (2 * s, 2 * s)))
+        p.setBrush(Qt.GlobalColor.white)
+        self._oval(p, px - pupil_r * 0.55, py - pupil_r * 0.65, pupil_r * 0.28, pupil_r * 0.28)
+        self._oval(p, px + pupil_r * 0.35, py + pupil_r * 0.25, pupil_r * 0.14, pupil_r * 0.14)
 
-        # 眉毛
-        pen = QPen(C["hair"], 1.8 * s)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        for side in [-1, 1]:
-            x = cx + side * eye_sp
-            path = QPainterPath()
-            path.moveTo(x - eye_w * 0.5, eye_y - eye_h * 0.5)
-            path.quadTo(x, eye_y - eye_h * 0.65, x + eye_w * 0.35, eye_y - eye_h * 0.5)
-            painter.drawPath(path)
-        painter.setPen(Qt.PenStyle.NoPen)
+        p.restore()
 
-        # 鼻子
-        painter.setBrush(QColor(230, 190, 160))
-        painter.drawEllipse(_r(cx, head_y + 8 * s, (1.8 * s, 1.8 * s)))
+        if self._speaking and open_amt > 0.5:
+            p.setPen(QPen(QColor(250, 204, 21, 160), max(1.0, s)))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            for angle in (30, 150, 270):
+                rad = math.radians(angle)
+                sx = ex + math.cos(rad) * eye_rx * 1.25
+                sy = ey + math.sin(rad) * eye_ry * 1.1
+                p.drawLine(QPointF(sx, sy), QPointF(sx + math.cos(rad) * 3 * s, sy + math.sin(rad) * 3 * s))
 
-        # 嘴 (微笑)
-        painter.setPen(QPen(C["mouth"], 2 * s, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        mouth_path = QPainterPath()
-        mouth_path.moveTo(cx - 5 * s, head_y + 16 * s)
-        mouth_path.quadTo(cx, head_y + 21 * s, cx + 5 * s, head_y + 16 * s)
-        painter.drawPath(mouth_path)
-        painter.setPen(Qt.PenStyle.NoPen)
-
-        # 腮红
-        for side in [-1, 1]:
-            x = cx + side * (eye_sp + 5 * s)
-            grad = QRadialGradient(x, head_y + 12 * s, 10 * s)
-            grad.setColorAt(0, QColor(255, 150, 150, 90))
-            grad.setColorAt(1, QColor(255, 150, 150, 0))
-            painter.setBrush(grad)
-            painter.drawEllipse(_r(x, head_y + 12 * s, (10 * s, 5 * s)))
-
-        # ═══════════════════════
-        # 蝴蝶结 (头顶)
-        # ═══════════════════════
-        bow_y = head_y - 46 * s
-        painter.setBrush(C["ribbon"])
-        painter.setPen(Qt.PenStyle.NoPen)
-        for side in [-1, 1]:
-            painter.drawEllipse(_r(cx + side * 9 * s, bow_y, (10 * s, 7 * s)))
-        painter.setBrush(QColor(180, 40, 40))
-        painter.drawEllipse(_r(cx, bow_y, (4 * s, 4 * s)))
-
-        painter.end()
-
-    # ──── 拖拽 (由 main.py 全局过滤器接管，此处仅作标记) ────
-
-    def mousePressEvent(self, event: QMouseEvent):
-        # 拖拽由 QApplication 全局事件过滤器处理 (见 main.py DragHelper)
-        super().mousePressEvent(event)
+    def _draw_wobble_lines(self, p: QPainter, cx: float, cy: float, s: float):
+        p.setPen(QPen(QColor(148, 163, 184, 100), max(1.2, 1.5 * s), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        for i, dx in enumerate((-32, -42)):
+            y = cy + (4 + i * 5) * s
+            p.drawLine(QPointF(cx + dx * s, y), QPointF(cx + (dx - 8) * s, y))

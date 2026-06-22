@@ -91,5 +91,5 @@ def build_coaching_graph() -> StateGraph:
     builder.add_edge("publish", END)
 
     graph = builder.compile()
-    logger.info("Coaching graph compiled: %d nodes", len(graph.nodes))
+    logger.debug("Coaching graph compiled: %d nodes", len(graph.nodes))
     return graph

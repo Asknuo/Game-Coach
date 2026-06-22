@@ -10,7 +10,7 @@ import logging
 import threading
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtWidgets import QVBoxLayout, QApplication
+from PyQt6.QtWidgets import QVBoxLayout, QApplication, QSizePolicy
 
 from desktop_pet.window import FramelessPetWindow
 from desktop_pet.pet_widget import PetWidget
@@ -20,8 +20,8 @@ from desktop_pet.ws_client import TipClient
 logger = logging.getLogger("desktop_pet.controller")
 
 # ── 配置 ─────────────────────────────────────────
-WINDOW_WIDTH = 320
-WINDOW_HEIGHT = 420
+WINDOW_WIDTH = 140
+WINDOW_HEIGHT = 170
 SPEECH_DURATION_MS = 8000  # 气泡显示时长
 
 
@@ -52,16 +52,24 @@ class PetController(QObject):
         self._window = FramelessPetWindow()
         self._window.setWindowTitle("LOL 教练")
         self._window.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
-        self._window.setMinimumSize(200, 260)
+        self._window.setMinimumSize(120, 150)
 
         # 布局
         layout = QVBoxLayout(self._window)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # 手绘角色
+        # 手绘角色（铺满窗口，确保整个区域可接收鼠标事件）
         self._pet = PetWidget(self._window)
-        layout.addWidget(self._pet)
+        self._pet.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        layout.addWidget(self._pet, 1)
+        self._window.register_drag_target(self._pet)
+        self._window.set_drag_callbacks(
+            on_start=lambda: self._pet.set_pose("drag"),
+            on_end=lambda: self._pet.set_pose("idle"),
+        )
         logger.info("Pet widget added to window")
 
         # 右键菜单
