@@ -18,11 +18,17 @@ class Item(BaseModel):
 
 class ActivePlayer(BaseModel):
     summoner_name: str = ""
+    champion_name: str = ""           # 英雄名（如 "Ahri"），Live Client API 的
+                                      # activePlayer 不含此字段，由 sync_active_player
+                                      # 从 all_players 匹配补全；Go 侧 MergeActivePlayer 也会同步
     team: str = ""
     level: int = 0
     current_gold: float = 0
     health: float = 0
     max_health: float = 0
+    kills: int = 0                    # 以下三项同样由 sync_active_player 从 all_players 补全
+    deaths: int = 0
+    assists: int = 0
     position: Vec2 = Field(default_factory=Vec2)
     items: list[Item] = Field(default_factory=list)
 
@@ -84,11 +90,18 @@ class GameState(BaseModel):
         return self.active_player.health / self.active_player.max_health * 100
 
     def sync_active_player(self) -> None:
-        """Populate ActivePlayer items from AllPlayers (Go collector sends them
-        separately). Fixes publish stale-item check and advice context tracking."""
+        """Populate ActivePlayer items / champion_name / KDA from AllPlayers.
+
+        Live Client API 的 activePlayer 端点不含 champion_name 和 KDA，
+        需从 all_players 中按 summoner_name 匹配补全。RAG 检索、
+        记忆注入、复盘摘要都依赖这些字段。"""
         for p in self.all_players:
             if p.summoner_name == self.active_player.summoner_name:
                 self.active_player.items = p.items
+                self.active_player.champion_name = p.champion_name
+                self.active_player.kills = p.kills
+                self.active_player.deaths = p.deaths
+                self.active_player.assists = p.assists
                 return
 
 

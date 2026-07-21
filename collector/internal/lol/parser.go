@@ -19,6 +19,7 @@ type GameState struct {
 
 type ActivePlayer struct {
 	SummonerName string  `json:"summoner_name"`
+	ChampionName string  `json:"champion_name"` // filled by MergeActivePlayer from AllPlayers
 	Team         string  `json:"team"`
 	Level        int     `json:"level"`
 	CurrentGold  float64 `json:"current_gold"`

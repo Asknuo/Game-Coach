@@ -1,9 +1,14 @@
 import json
 import logging
 import os
+from collections import OrderedDict
 from urllib.request import urlopen, Request
 
 logger = logging.getLogger(__name__)
+
+# embed_query 缓存上限（定时事件如 laning_check/macro_check 的 query 高度重复，
+# 缓存可避免重复调用远程 embedding API）
+_QUERY_CACHE_SIZE = 512
 
 
 class Embedder:
@@ -71,9 +76,21 @@ class Embedder:
             return self._embed_openai(texts)
 
     def embed_query(self, text: str) -> list[float] | None:
+        """单条查询 embedding，带 LRU 缓存（远程 API 调用，延迟+费用双高）."""
+        cache = getattr(self, "_query_cache", None)
+        if cache is None:
+            cache = self._query_cache = OrderedDict()
+        if text in cache:
+            cache.move_to_end(text)
+            return cache[text]
+
         result = self.embed([text])
         if result:
-            return result[0]
+            emb = result[0]
+            cache[text] = emb
+            if len(cache) > _QUERY_CACHE_SIZE:
+                cache.popitem(last=False)
+            return emb
         return None
 
     # ── OpenAI 后端 ──

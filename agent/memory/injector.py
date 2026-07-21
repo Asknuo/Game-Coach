@@ -39,6 +39,22 @@ class MemoryInjector:
         if u.top_of_mind:
             parts.append(f"Focus: {'; '.join(u.top_of_mind[-4:])}")
 
+        # 1.6. LCU 大厅上下文（符文 / 分路 / 英雄熟练度）
+        position = u.context.get("assigned_position", "")
+        if position:
+            parts.append(f"Assigned role: {position}")
+        runes = u.context.get("runes") or {}
+        perk_ids = runes.get("perk_ids") or []
+        if perk_ids:
+            parts.append(f"Runes: primary={runes.get('primary_style_id')} "
+                         f"sub={runes.get('sub_style_id')} perks={perk_ids}")
+        masteries = u.context.get("top_masteries") or []
+        if masteries:
+            top = ", ".join(
+                f"champ{m.get('champion_id')}(L{m.get('level')})" for m in masteries[:3]
+            )
+            parts.append(f"Top masteries: {top}")
+
         # 2. Facts (高置信度)
         high_conf = [f for f in memory.facts if f.confidence >= 0.7]
         if high_conf:
@@ -72,6 +88,3 @@ class MemoryInjector:
                 result = user_facts
 
         return result
-
-    def format_empty(self) -> str:
-        return "No player history yet."

@@ -4,7 +4,7 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data   # ✅ 冒号后不要有空格
+      - redis_data:/data
     restart: unless-stopped
   agent:
     build:
@@ -13,12 +13,25 @@ services:
       - "8000:8000"
     environment:
       REDIS_URL: redis://redis:6379/0
+      # ── LLM（与 .env.example 保持一致，Docker 部署必须显式传入）──
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      # ── Embedding ──
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      # ── 兼容旧变量（可选）──
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
     depends_on:
       - redis
+    # 注意: 不要挂载 ./agent:/app — Windows 宿主机的 chroma_data (SQLite)
+    # 与 Linux 容器不兼容；代码已通过镜像 COPY 打入。
+    # 记忆数据持久化用 named volume:
     volumes:
-      - ./agent:/app
+      - agent_memory:/app/memory/data
 
 volumes:
   redis_data:
+  agent_memory:

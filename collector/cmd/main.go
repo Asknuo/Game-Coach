@@ -83,6 +83,11 @@ func main() {
 	}
 }
 
+// stateHeartbeat: 无事件时定期刷新 Agent 快照的间隔。
+// Agent 的建议反馈闭环（ADVICE_FEEDBACK_WINDOW=25s）依赖 state 帧驱动，
+// 心跳间隔必须小于该窗口。
+const stateHeartbeat = 20 * time.Second
+
 func runLoop(ctx context.Context, client *lol.Client, engine *event.Engine, ws *sender.WebSocket, interval time.Duration) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -90,6 +95,8 @@ func runLoop(ctx context.Context, client *lol.Client, engine *event.Engine, ws *
 	credsNotified := false
 	gameNotified := false
 	notInGameLogged := false
+	// 零值 → 游戏开始后首个 tick 必发一帧 state，让 Agent 立即拿到快照
+	var lastStateSent time.Time
 
 	for {
 		select {
@@ -132,11 +139,18 @@ func runLoop(ctx context.Context, client *lol.Client, engine *event.Engine, ws *
 
 			state.MergeActivePlayer()
 
-			if err := ws.SendState(state); err != nil {
-				return err
+			events := engine.Process(state)
+
+			// 事件驱动发送：有事件时 state 随事件一起发（state 是事件的上下文）；
+			// 无事件时仅靠心跳刷新，避免每秒全量推送（一局 ~1800 条冗余消息）
+			if len(events) > 0 || time.Since(lastStateSent) >= stateHeartbeat {
+				if err := ws.SendState(state); err != nil {
+					return err
+				}
+				lastStateSent = time.Now()
 			}
 
-			for _, ev := range engine.Process(state) {
+			for _, ev := range events {
 				if err := ws.SendEvent(ev); err != nil {
 					return err
 				}

@@ -26,6 +26,9 @@ credentials.json
 secrets.*
 config.local.*
 
+# ── 本地问题记录（不上传远程） ──
+ISSUES.md
+
 # ── 向量数据库 ──
 chroma_db/
 *.chroma/

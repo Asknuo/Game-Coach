@@ -1,8 +1,10 @@
 """LangGraph 节点函数 — coaching 流水线每一步的具体逻辑."""
 
+import asyncio
 import logging
 
 from graph.state import CoachState
+from memory.redis_store import DEFAULT_TIP_TTL, MIN_CONFIDENCE_TO_PUBLISH
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,7 @@ def set_injections(
     retriever,
     injector,
     redis_store,
+    memory=None,
 ):
     """注入模块级依赖（避免 LangGraph checkpoint 序列化问题）."""
     _injections["planner"] = planner
@@ -23,6 +26,7 @@ def set_injections(
     _injections["retriever"] = retriever
     _injections["injector"] = injector
     _injections["redis_store"] = redis_store
+    _injections["memory"] = memory
 
 
 # ── 解析事件 ──────────────────────────────────────────
@@ -40,7 +44,7 @@ def parse_event(state: CoachState) -> CoachState:
         "event_data": event_data,
         "is_valid": bool(event_name),
         "signals": [],
-        "priority": 1,
+        # priority 保留上游（队列/紧急通道）计算值，detect_signals 再按事件上调
         "skill_name": "",
         "skill_message": "",
         "rag_query": "",
@@ -64,7 +68,8 @@ def detect_signals(state: CoachState) -> CoachState:
     gs = state.get("game_state", {})
 
     signals: list[str] = []
-    priority = 1
+    # 上游（_event_priority / SKILL_REGISTRY）已给出基础优先级，这里只做上调
+    priority = state.get("priority", 1) or 1
 
     # 死亡时跳过非龙/大龙事件
     active = gs.get("active_player", {}) if gs else {}
@@ -82,62 +87,65 @@ def detect_signals(state: CoachState) -> CoachState:
         from models.state import get_position_distance, is_position_valid
 
         # 1. 在泉水附近 — 已经回城/正在回复，不发
+        #    蓝队泉水 ≈ (0,0)，红队泉水 ≈ (14500,14500)，队伍未知时两侧都查
         active_pos = active.get("position", {"x": 0, "y": 0})
         if is_position_valid(active_pos):
-            fountain_dist = get_position_distance(active_pos, {"x": 0, "y": 0})
-            if fountain_dist < 1500:
-                logger.debug("detect_signals: skip low_health (in fountain)")
-                return {**state, "is_valid": False, "skip_reason": "in_fountain"}
+            team = active.get("team", "")
+            fountains = (
+                [{"x": 14500, "y": 14500}] if team == "CHAOS"
+                else [{"x": 0, "y": 0}] if team == "ORDER"
+                else [{"x": 0, "y": 0}, {"x": 14500, "y": 14500}]
+            )
+            for f in fountains:
+                if get_position_distance(active_pos, f) < 1500:
+                    logger.debug("detect_signals: skip low_health (in fountain)")
+                    return {**state, "is_valid": False, "skip_reason": "in_fountain"}
 
-        priority = 3
+        priority = max(priority, 3)
         signals.append("low_health")
         if hp_pct < 15:
             signals.append("critically_low")
     elif name == "dragon_soon":
-        priority = 2
+        priority = max(priority, 2)
         signals.append("objective_stage")
         if data.get("seconds_left", 99) <= 10:
             signals.append("imminent_objective")
             priority = 3
     elif name == "baron_soon":
-        priority = 2
+        priority = max(priority, 2)
         signals.append("objective_stage")
         if data.get("seconds_left", 99) <= 10:
             signals.append("imminent_objective")
             priority = 3
     elif name == "item_purchased":
-        priority = 1
         signals.append("power_spike")
     elif name == "item_upgraded":
-        priority = 1
         signals.append("power_spike")
     elif name == "gold_spike":
-        priority = 1
         signals.append("power_spike")
     elif name == "kill":
-        priority = 2
+        priority = max(priority, 2)
         signals.append("kill_secured")
     elif name == "death":
-        priority = 2
+        priority = max(priority, 2)
         signals.append("player_died")
     elif name == "teamfight_detected":
-        priority = 2
+        priority = max(priority, 2)
         signals.append("teamfight")
     elif name == "enemy_gold_lead":
-        priority = 2
+        priority = max(priority, 2)
         signals.append("enemy_power_spike")
         signals.append("danger")
     elif name == "enemy_fed":
-        priority = 3
+        priority = max(priority, 3)
         signals.append("enemy_fed")
         signals.append("danger")
     elif name == "enemy_item_purchased":
-        priority = 1
         signals.append("enemy_power_spike")
     elif name in ("item_sold", "enemy_item_sold"):
-        priority = 1
+        pass
     elif name in ("laning_check", "macro_check", "jungle_check", "strategy_check"):
-        priority = 1
+        pass
 
     logger.debug("detect_signals: %s signals=%s priority=%d", name, signals, priority)
     return {**state, "signals": signals, "priority": priority, "is_valid": True}
@@ -244,7 +252,7 @@ def route_skill(state: CoachState) -> CoachState:
 
 # ── 向量检索 ──────────────────────────────────────────
 
-def retrieve_knowledge(state: CoachState) -> CoachState:
+async def retrieve_knowledge(state: CoachState) -> CoachState:
     """ChromaDB RAG 检索 — 聚合己方+敌方英雄攻略、游戏机制等多源知识."""
     retriever = _injections.get("retriever")
     if not retriever:
@@ -256,22 +264,27 @@ def retrieve_knowledge(state: CoachState) -> CoachState:
     game_time = 0.0
     event_name = state.get("event_name", "")
 
-    # ★ enemy events: 直接用事件数据中的敌方英雄
+    # ★ enemy events: 直接用事件数据中的敌方英雄（Go 侧填的是 ChampionName）
     if event_name in ("enemy_item_purchased", "enemy_gold_lead", "enemy_fed"):
         event_data = state.get("event_data", {})
         enemy_champion = event_data.get("enemy_champion", "")
 
     if gs:
         active_player = gs.get("active_player", {})
-        champion = active_player.get("summoner_name", "")
+        summoner = active_player.get("summoner_name", "")
+        # ★ RAG 检索必须用英雄名（如 "Ahri"），不能用召唤师名；
+        #   active_player.champion_name 由 sync_active_player 补全
+        champion = active_player.get("champion_name", "")
 
         all_players: list[dict] = gs.get("all_players", [])
         active_team = ""
         active_pos = active_player.get("position", {})
         for p in all_players:
-            if p.get("summoner_name") == champion:
+            if p.get("summoner_name") == summoner:
                 active_team = p.get("team", "")
                 active_pos = p.get("position", active_pos)
+                if not champion:
+                    champion = p.get("champion_name", "")
                 break
 
         if active_team and active_pos and event_name != "enemy_item_purchased":
@@ -291,13 +304,16 @@ def retrieve_knowledge(state: CoachState) -> CoachState:
                         dist = ((active_x - ex) ** 2 + (active_y - ey) ** 2) ** 0.5
                         if dist < best_dist and dist < 5000:
                             best_dist = dist
-                            enemy_champion = p.get("summoner_name", "")
+                            # ★ 用英雄名检索敌方攻略
+                            enemy_champion = p.get("champion_name", "")
 
         game_time = gs.get("game_time", 0)
 
     rag_query = state.get("rag_query", "")
 
-    aggregated = retriever.aggregate_coaching_context(
+    # embedding + ChromaDB 查询是同步 IO，offload 到线程池避免阻塞事件循环
+    aggregated = await asyncio.to_thread(
+        retriever.aggregate_coaching_context,
         ally_champion=champion,
         enemy_champion=enemy_champion if enemy_champion != champion else None,
         game_time=game_time,
@@ -322,10 +338,8 @@ def inject_memory(state: CoachState) -> CoachState:
     if not injector:
         return state
 
-    from memory.models import PlayerMemory
-
-    import app as _app
-    memory: PlayerMemory = getattr(_app, "memory", None)
+    # memory 由 app.py 通过 set_injections 注入（避免 import app 循环依赖）
+    memory = _injections.get("memory")
     if memory is None:
         return state
 
@@ -336,7 +350,7 @@ def inject_memory(state: CoachState) -> CoachState:
 
 # ── LLM 润色 ──────────────────────────────────────────
 
-def llm_polish(state: CoachState) -> CoachState:
+async def llm_polish(state: CoachState) -> CoachState:
     """调用 LLM 润色教练建议，注入 SKILL.md 上下文 + 坑点清单."""
     llm = _injections.get("llm")
     if not llm or not llm._client:
@@ -372,7 +386,8 @@ def llm_polish(state: CoachState) -> CoachState:
     rag_ctx = "\n\n".join(parts) if parts else None
 
     try:
-        result = llm.polish(tip, None, rag_context=rag_ctx)
+        # ★ 异步链路：不阻塞 FastAPI 事件循环
+        result = await llm.apolish(tip, None, rag_context=rag_ctx)
         state["polished_message"] = result.message
         logger.debug("llm_polish: %s", state["polished_message"][:80])
     except Exception:
@@ -384,29 +399,49 @@ def llm_polish(state: CoachState) -> CoachState:
 
 # ── 验证 / 去重 ──────────────────────────────────────
 
-def validate(state: CoachState) -> CoachState:
-    """去重检查，决定是否发布."""
+async def validate(state: CoachState) -> CoachState:
+    """去重 + 置信度检查，决定是否发布.
+
+    - 去重窗口 = SKILL.md frontmatter 声明的 cooldown（不再固定 120s）
+    - 置信度来自反馈闭环：玩家长期不采纳该 skill 的建议 → 自动降权停发
+    """
     redis = _injections.get("redis_store")
     skill = state["skill_name"]
 
     if not skill:
         return {**state, "should_publish": False, "skip_reason": "no_skill"}
 
-    if redis and redis.was_tip_recently_sent(state["session_id"], skill):
-        logger.debug("validate: duplicate skill=%s", skill)
-        return {**state, "should_publish": False, "skip_reason": "duplicate"}
+    if redis:
+        # ★ 反馈闭环消费：置信度过低的 skill 自动静音
+        conf = await redis.get_skill_confidence(state["session_id"], skill)
+        if conf < MIN_CONFIDENCE_TO_PUBLISH:
+            logger.info("validate: skill=%s muted by low confidence %.2f", skill, conf)
+            return {**state, "should_publish": False, "skip_reason": "low_confidence"}
+
+        if await redis.was_tip_recently_sent(state["session_id"], skill):
+            logger.debug("validate: duplicate skill=%s", skill)
+            return {**state, "should_publish": False, "skip_reason": "duplicate"}
 
     return {**state, "should_publish": True, "skip_reason": ""}
 
 
 # ── 发布 ──────────────────────────────────────────────
 
-def publish(state: CoachState) -> CoachState:
-    """标记 tip 输出，含时效性检查."""
-    # ★ 时效性检查：如果关键条件已经变了，放弃这条建议
-    gs = state.get("game_state", {})
+async def publish(state: CoachState) -> CoachState:
+    """标记 tip 输出，含时效性检查（对比最新 state，而非事件时的旧快照）."""
     event_name = state.get("event_name", "")
     event_data = state.get("event_data", {})
+
+    redis = _injections.get("redis_store")
+
+    # ★ 时效性检查：拉取最新 state — LLM 调用数秒后，事件时的快照可能已过时
+    latest = None
+    if redis:
+        try:
+            latest = await redis.get_state(state["session_id"])
+        except Exception:
+            latest = None
+    gs = latest or state.get("game_state", {})
 
     if gs:
         active = gs.get("active_player", {}) if gs else {}
@@ -419,17 +454,32 @@ def publish(state: CoachState) -> CoachState:
             logger.debug("publish: skip low_health (HP recovered to %.0f%%)", hp_pct)
             return {**state, "should_publish": False, "skip_reason": "hp_recovered"}
 
-        # item_purchased / enemy_item_purchased: 装备已不在栏位 → 取消
-        if event_name in ("item_purchased", "enemy_item_purchased") and active.get("items"):
-            event_item_ids = set(event_data.get("item_ids", []))
-            current_ids = {it.get("itemID", 0) for it in active.get("items", [])}
-            if event_item_ids and event_item_ids.isdisjoint(current_ids):
-                logger.debug("publish: skip %s (items no longer in inventory)", event_name)
+        # dragon_soon / baron_soon: 目标已出生（计时器消失）→ 提示已过时
+        if event_name == "dragon_soon" and latest is not None and not gs.get("dragon_timer"):
+            logger.debug("publish: skip dragon_soon (dragon already spawned)")
+            return {**state, "should_publish": False, "skip_reason": "objective_gone"}
+        if event_name == "baron_soon" and latest is not None and not gs.get("baron_timer"):
+            logger.debug("publish: skip baron_soon (baron already spawned)")
+            return {**state, "should_publish": False, "skip_reason": "objective_gone"}
+
+        # item_purchased: 装备已不在栏位 → 取消
+        # （仅检查己方购买；enemy_item_purchased 是敌方装备，与我方栏位无关）
+        if event_name == "item_purchased" and active.get("items"):
+            bought_id = event_data.get("item_id", 0)
+            current_ids = {
+                (it.get("item_id") or it.get("itemID", 0))
+                for it in active.get("items", [])
+            }
+            if bought_id and bought_id not in current_ids:
+                logger.debug("publish: skip %s (item no longer in inventory)", event_name)
                 return {**state, "should_publish": False, "skip_reason": "items_gone"}
 
-    redis = _injections.get("redis_store")
     if redis:
-        redis.mark_tip_sent(state["session_id"], state["skill_name"])
+        # ★ 去重 TTL = SKILL.md 声明的 cooldown
+        from planner.planner import SKILL_REGISTRY
+        meta = SKILL_REGISTRY.get(state["skill_name"], {})
+        ttl = int(meta.get("cooldown", DEFAULT_TIP_TTL) or DEFAULT_TIP_TTL)
+        await redis.mark_tip_sent(state["session_id"], state["skill_name"], ttl=ttl)
 
     state["tip"] = {
         "skill": state["skill_name"],

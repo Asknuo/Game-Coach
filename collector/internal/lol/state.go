@@ -51,14 +51,15 @@ func (s *GameState) ActivePlayerFromAll() *Player {
 	return nil
 }
 
-// MergeActivePlayer copies team and position from AllPlayers into ActivePlayer.
-// The Live Client API's activePlayer endpoint does not include team or position,
-// so we merge them from the allPlayers list. Must be called after ParseGameState.
+// MergeActivePlayer copies team, position and champion name from AllPlayers into
+// ActivePlayer. The Live Client API's activePlayer endpoint does not include these
+// fields, so we merge them from the allPlayers list. Must be called after ParseGameState.
 func (s *GameState) MergeActivePlayer() {
 	for _, p := range s.AllPlayers {
 		if p.SummonerName == s.ActivePlayer.SummonerName {
 			s.ActivePlayer.Position = p.Position
 			s.ActivePlayer.Team = p.Team
+			s.ActivePlayer.ChampionName = p.ChampionName
 			return
 		}
 	}

@@ -32,10 +32,10 @@ LOL Client ─┬─ Live Client Data API (127.0.0.1:2999) ─────┐
                                                        │
                                             WebSocket tip 推送
                                                        │
-                                     ┌─────────────────┼─────────────────┐
-                                     ▼                 ▼                  ▼
-                               Collector 日志      Overlay 页面      Desktop Pet
-                                                 (Web Speech API)   (Edge TTS / PyQt6)
+                                     ┌─────────────────┴─────────────────┐
+                                     ▼                                   ▼
+                               Collector 日志                        Overlay 页面
+                                                                  (Web Speech API)
 ```
 
 ## 设计理念
@@ -152,9 +152,6 @@ Game Coach/
 │   │   └── lcu_client.py           #   LCUClientCollector — LCU API（大厅数据：召唤师/熟练度/
 │   │                               #    符文/GameFlow 阶段追踪/英雄选择）
 │   │
-│   ├── middleware/                 # 中间件
-│   │   └── game_middleware.py       #   GameMiddleware — state/event 消息拦截与预处理
-│   │
 ├── collector/                       # Go — 轻量版采集器 & 事件检测（可选，性能更好）
 │   ├── cmd/
 │   │   ├── main.go                 #   主入口：轮询 + 事件检测 + WS 发送，信号处理
@@ -174,17 +171,6 @@ Game Coach/
 │   │       └── websocket.go        #   WebSocket 发送器 — 双工，接收 Agent tip 日志打印
 │   ├── go.mod
 │   └── go.sum
-│
-├── desktop_pet/                     # Python — 桌面小玩偶（独立进程，PyQt6）
-│   ├── main.py                      #   入口：QApplication + Win32 全局拖拽
-│   ├── pet_controller.py            #   控制器：协调 UI / TTS / WebSocket
-│   ├── window.py                    #   无边框置顶窗口（DWM 阴影、右键菜单）
-│   ├── pet_widget.py                #   QPainter 手绘角色 + 说话气泡动画
-│   ├── ws_client.py                 #   TipClient (QThread) — 订阅 /ws/overlay
-│   ├── tts_engine.py                #   Edge TTS（首选）→ pyttsx3（离线回退）
-│   ├── live2d_widget.py             #   可选 Live2D 渲染（QWebEngineView）
-│   ├── live2d_html/                 #   Live2D / Canvas 回退页面
-│   └── requirements.txt             #   桌宠独立依赖
 │
 ├── docker-compose.yml               # Redis 7 Alpine + Agent 容器编排
 ├── .env.example                     # 环境变量模板（12 个变量）
@@ -264,15 +250,6 @@ langgraph>=0.2.0        # LangChain 图编排框架
 pyyaml>=6.0             # YAML frontmatter 解析
 ```
 
-桌宠依赖（独立安装，见步骤 8）：
-
-```
-PyQt6>=6.6.0            # 无边框桌面窗口
-websocket-client>=1.8.0 # WebSocket 客户端
-edge-tts>=6.1.0         # 中文 TTS（首选）
-pyttsx3>=2.90           # 离线 TTS 回退
-```
-
 ### 4. 准备知识库
 
 ```bash
@@ -332,19 +309,7 @@ python -m collector.bridge
 | `http://localhost:8000/health` | GET | Agent 健康检查 — 服务状态 + 记忆统计 |
 | `http://localhost:8000/tips/latest` | GET | 最新状态和建议 — 当前英雄/阶段/记忆概况 |
 
-### 8. （可选）启动桌面小玩偶
-
-桌宠是独立进程，通过 WebSocket 订阅 Agent 的 coaching tip，不参与 LangGraph 流水线。
-
-```bash
-# 在项目根目录
-pip install -r desktop_pet/requirements.txt
-python -m desktop_pet.main
-```
-
-连接地址默认为 `ws://localhost:8000/ws/overlay`，可通过环境变量 `AGENT_HOST` / `AGENT_PORT` 修改。
-
-### 9. （可选）Docker 完整部署
+### 8. （可选）Docker 完整部署
 
 ```bash
 # 确保 .env 已配置
@@ -526,10 +491,10 @@ skills/{skill_name}/
 
 | Type | 方向 | 说明 |
 |------|------|------|
-| `state` | Collector → Agent | 完整游戏状态（1s 轮询） |
+| `state` | Collector → Agent | 完整游戏状态（事件驱动：有事件时随事件发送；无事件时每 20s 心跳一帧） |
 | `event` | Collector → Agent | 检测到的事件 |
 | `tip` | Agent → Collector / Overlay | 教练建议（LangGraph 流水线输出） |
-| `ping` | Overlay / Desktop Pet → Agent | 心跳保活（Agent 忽略，不断开连接） |
+| `ping` | Overlay → Agent | 心跳保活（Agent 忽略，不断开连接） |
 
 ---
 
@@ -647,30 +612,11 @@ Collector 连接后，Agent 日志实时输出每条 coaching tip：
 [INFO] [review] Game ended — CS 187 @ 28min (6.7/min), needs improvement. 3 deaths to ganks.
 ```
 
-### 2. Desktop Pet 桌面小玩偶（`desktop_pet/`）
+### 2. Overlay 广播通道
 
-独立 PyQt6 客户端，通过 `/ws/overlay` 接收 tip 并语音播报。
-
-```
-Agent publish 节点
-       │ 广播 {"type":"tip", "payload":{skill, message}}
-       ▼
-TipClient (QThread)          ← ws://localhost:8000/ws/overlay
-       │ pyqtSignal
-       ▼
-PetController
-  ├─ PetWidget      QPainter 手绘角色 + 气泡（~30fps 动画）
-  ├─ TTSEngine      Edge TTS → pyttsx3 → 静音
-  └─ FramelessPetWindow  无边框置顶、Win32 系统拖拽、右键菜单
-```
-
-特性：
-- 320×420 无边框置顶窗口，默认屏幕右下角
-- QPainter 手绘角色（眨眼、上下浮动动画）+ 8 秒自动消失的气泡
-- Edge TTS 中文朗读（`zh-CN-XiaoxiaoNeural`，可通过 `EDGE_VOICE` / `EDGE_RATE` 配置）
-- 每 15 秒向 Agent 发送 `{"type":"ping"}` 心跳保活
-- 右键菜单：静音 / 测试语音 / 退出；双击退出；Escape 键退出
-- 可选 `live2d_widget.py`：QWebEngineView + Live2D（需 Cubism SDK，默认未启用）
+`/ws/overlay` 是通用广播端点：Agent 发布的每条 tip 都会推送给所有已连接的
+overlay 客户端（如浏览器 Overlay 页面），可用于自定义前端展示或语音播报。
+客户端每 15 秒发送 `{"type":"ping"}` 心跳保活即可保持连接。
 
 ---
 
@@ -690,10 +636,6 @@ PetController
 | `AGENT_WS_URL` | Collector → Agent 的 WebSocket 地址 | `ws://localhost:8000/ws/collector` | - |
 | `POLL_INTERVAL` | 采集轮询间隔（秒） | `1.0` | - |
 | `PORT` | Agent HTTP/WS 服务端口 | `8000` | - |
-| `AGENT_HOST` | 桌宠连接 Agent 的主机 | `localhost` | - |
-| `AGENT_PORT` | 桌宠连接 Agent 的端口 | `8000` | - |
-| `EDGE_VOICE` | Edge TTS 音色 | `zh-CN-XiaoxiaoNeural` | - |
-| `EDGE_RATE` | Edge TTS 语速 | `+15%` | - |
 
 ---
 
