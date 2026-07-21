@@ -77,6 +77,37 @@ metrics: dict[str, int] = {
 # ── FastAPI ───────────────────────────────────────────
 
 
+async def _bg_ingest() -> None:
+    """后台刷新知识库（摄入是分钟级耗时操作，不阻塞服务启动）."""
+    logger.info("Knowledge base stale or missing — refreshing in background...")
+    try:
+        from knowledge.ingest import Ingestor
+        await asyncio.to_thread(Ingestor().ingest_all)
+        logger.info("Knowledge base refresh finished")
+    except Exception:
+        logger.exception("Auto-refresh knowledge base failed")
+
+
+def _maybe_start_ingest() -> "asyncio.Task | None":
+    """知识库过期/缺失时启动后台摄入任务，否则返回 None.
+
+    首次启动或超过 7 天未摄入 → 后台自动刷新。
+    """
+    if not retriever.available or not retriever.store.needs_refresh():
+        return None
+    return asyncio.create_task(_bg_ingest())
+
+
+async def _periodic_save() -> None:
+    """HA #1: 每 60 秒自动持久化到磁盘，防止进程崩溃丢数据."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            memory_store.save("default", memory)
+        except Exception:
+            logger.exception("Periodic memory save failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     node_count = len(coaching_graph.nodes) if hasattr(coaching_graph, "nodes") else 0
@@ -90,34 +121,13 @@ async def lifespan(app: FastAPI):
     if not retriever.available:
         logger.warning("RAG unavailable — set LLM_API_KEY and run: python -m knowledge.ingest")
 
-    # ★ 知识库新鲜度检查：首次启动或超过 7 天未摄入 → 后台自动刷新
-    #   （摄入是分钟级耗时操作，放后台任务，不阻塞服务启动）
-    if retriever.available:
-        store = retriever.store
-        if store.needs_refresh():
-            async def _bg_ingest():
-                logger.info("Knowledge base stale or missing — refreshing in background...")
-                try:
-                    from knowledge.ingest import Ingestor
-                    await asyncio.to_thread(Ingestor().ingest_all)
-                    logger.info("Knowledge base refresh finished")
-                except Exception:
-                    logger.exception("Auto-refresh knowledge base failed")
-
-            asyncio.create_task(_bg_ingest())
-
-    # ★ HA #1: 每 60 秒自动持久化到磁盘，防止进程崩溃丢数据
-    async def periodic_save():
-        while True:
-            await asyncio.sleep(60)
-            try:
-                memory_store.save("default", memory)
-            except Exception:
-                logger.exception("Periodic memory save failed")
-
-    save_task = asyncio.create_task(periodic_save())
+    # 保留后台任务引用，防止被 GC 提前回收（弱引用 create_task 的已知陷阱）
+    ingest_task = _maybe_start_ingest()
+    save_task = asyncio.create_task(_periodic_save())
     yield
     save_task.cancel()
+    if ingest_task and not ingest_task.done():
+        ingest_task.cancel()
     memory_store.save("default", memory)
     logger.info("Memory saved to disk")
 

@@ -88,108 +88,131 @@ func ParseGameState(raw []byte) (*GameState, error) {
 		Events:       []GameEvent{},
 	}
 
-	if data, ok := root["gameData"]; ok {
-		var gd struct {
-			GameTime float64 `json:"gameTime"`
-		}
-		if err := json.Unmarshal(data, &gd); err == nil {
-			state.GameTime = gd.GameTime
-		}
-	}
-
-	if data, ok := root["activePlayer"]; ok {
-		var ap struct {
-			SummonerName string `json:"summonerName"`
-			Level        int    `json:"level"`
-			CurrentGold  float64 `json:"currentGold"`
-			ChampionStats struct {
-				CurrentHealth float64 `json:"currentHealth"`
-				MaxHealth     float64 `json:"maxHealth"`
-			} `json:"championStats"`
-			Items []struct {
-				ItemID int `json:"itemID"`
-				Slot   int `json:"slot"`
-			} `json:"items"`
-		}
-		if err := json.Unmarshal(data, &ap); err == nil {
-			items := make([]Item, 0, len(ap.Items))
-			for _, it := range ap.Items {
-				items = append(items, Item{ItemID: it.ItemID, Slot: it.Slot})
-			}
-			state.ActivePlayer = ActivePlayer{
-				SummonerName: ap.SummonerName,
-				Level:        ap.Level,
-				CurrentGold:  ap.CurrentGold,
-				Health:       ap.ChampionStats.CurrentHealth,
-				MaxHealth:    ap.ChampionStats.MaxHealth,
-				Items:        items,
-			}
-		}
-	}
-
-	if data, ok := root["allPlayers"]; ok {
-		var players []struct {
-			SummonerName string  `json:"summonerName"`
-			Team         string  `json:"team"`
-			ChampionName string  `json:"championName"`
-			Level        int     `json:"level"`
-			CurrentGold  float64 `json:"currentGold"`
-			Scores       struct {
-				Health     float64 `json:"health"`
-				MaxHealth  float64 `json:"maxHealth"`
-				Kills      int     `json:"kills"`
-				Deaths     int     `json:"deaths"`
-				Assists    int     `json:"assists"`
-				CreepScore int     `json:"creepScore"`
-			} `json:"scores"`
-			Position struct {
-				X float64 `json:"x"`
-				Y float64 `json:"y"`
-			} `json:"position"`
-			Items []struct {
-				ItemID int `json:"itemID"`
-				Slot   int `json:"slot"`
-			} `json:"items"`
-		}
-		if err := json.Unmarshal(data, &players); err == nil {
-			for _, p := range players {
-				items := make([]Item, len(p.Items))
-				for i, it := range p.Items {
-					items[i] = Item{ItemID: it.ItemID, Slot: it.Slot}
-				}
-				state.AllPlayers = append(state.AllPlayers, Player{
-					SummonerName: p.SummonerName,
-					Team:         p.Team,
-					ChampionName: p.ChampionName,
-					Level:        p.Level,
-					Kills:        p.Scores.Kills,
-					Deaths:       p.Scores.Deaths,
-					Assists:      p.Scores.Assists,
-					CurrentGold:  p.CurrentGold,
-					CreepScore:   p.Scores.CreepScore,
-					Health:       p.Scores.Health,
-					MaxHealth:    p.Scores.MaxHealth,
-					Position:     Vec2{X: p.Position.X, Y: p.Position.Y},
-					Items:        items,
-				})
-			}
-		}
-	}
-
-	if data, ok := root["events"]; ok {
-		state.RawEventData = data
-		var ev struct {
-			Events []apiGameEvent `json:"Events"`
-		}
-		if err := json.Unmarshal(data, &ev); err == nil {
-			state.Events = make([]GameEvent, len(ev.Events))
-			for i, e := range ev.Events {
-				state.Events[i] = e.toGameEvent()
-			}
-		}
-	}
+	parseGameData(root, state)
+	parseActivePlayer(root, state)
+	parseAllPlayers(root, state)
+	parseEvents(root, state)
 
 	return state, nil
+}
+
+func parseGameData(root map[string]json.RawMessage, state *GameState) {
+	data, ok := root["gameData"]
+	if !ok {
+		return
+	}
+	var gd struct {
+		GameTime float64 `json:"gameTime"`
+	}
+	if err := json.Unmarshal(data, &gd); err == nil {
+		state.GameTime = gd.GameTime
+	}
+}
+
+func parseActivePlayer(root map[string]json.RawMessage, state *GameState) {
+	data, ok := root["activePlayer"]
+	if !ok {
+		return
+	}
+	var ap struct {
+		SummonerName string `json:"summonerName"`
+		Level        int    `json:"level"`
+		CurrentGold  float64 `json:"currentGold"`
+		ChampionStats struct {
+			CurrentHealth float64 `json:"currentHealth"`
+			MaxHealth     float64 `json:"maxHealth"`
+		} `json:"championStats"`
+		Items []struct {
+			ItemID int `json:"itemID"`
+			Slot   int `json:"slot"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(data, &ap); err != nil {
+		return
+	}
+	items := make([]Item, 0, len(ap.Items))
+	for _, it := range ap.Items {
+		items = append(items, Item{ItemID: it.ItemID, Slot: it.Slot})
+	}
+	state.ActivePlayer = ActivePlayer{
+		SummonerName: ap.SummonerName,
+		Level:        ap.Level,
+		CurrentGold:  ap.CurrentGold,
+		Health:       ap.ChampionStats.CurrentHealth,
+		MaxHealth:    ap.ChampionStats.MaxHealth,
+		Items:        items,
+	}
+}
+
+func parseAllPlayers(root map[string]json.RawMessage, state *GameState) {
+	data, ok := root["allPlayers"]
+	if !ok {
+		return
+	}
+	var players []struct {
+		SummonerName string  `json:"summonerName"`
+		Team         string  `json:"team"`
+		ChampionName string  `json:"championName"`
+		Level        int     `json:"level"`
+		CurrentGold  float64 `json:"currentGold"`
+		Scores       struct {
+			Health     float64 `json:"health"`
+			MaxHealth  float64 `json:"maxHealth"`
+			Kills      int     `json:"kills"`
+			Deaths     int     `json:"deaths"`
+			Assists    int     `json:"assists"`
+			CreepScore int     `json:"creepScore"`
+		} `json:"scores"`
+		Position struct {
+			X float64 `json:"x"`
+			Y float64 `json:"y"`
+		} `json:"position"`
+		Items []struct {
+			ItemID int `json:"itemID"`
+			Slot   int `json:"slot"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(data, &players); err != nil {
+		return
+	}
+	for _, p := range players {
+		items := make([]Item, len(p.Items))
+		for i, it := range p.Items {
+			items[i] = Item{ItemID: it.ItemID, Slot: it.Slot}
+		}
+		state.AllPlayers = append(state.AllPlayers, Player{
+			SummonerName: p.SummonerName,
+			Team:         p.Team,
+			ChampionName: p.ChampionName,
+			Level:        p.Level,
+			Kills:        p.Scores.Kills,
+			Deaths:       p.Scores.Deaths,
+			Assists:      p.Scores.Assists,
+			CurrentGold:  p.CurrentGold,
+			CreepScore:   p.Scores.CreepScore,
+			Health:       p.Scores.Health,
+			MaxHealth:    p.Scores.MaxHealth,
+			Position:     Vec2{X: p.Position.X, Y: p.Position.Y},
+			Items:        items,
+		})
+	}
+}
+
+func parseEvents(root map[string]json.RawMessage, state *GameState) {
+	data, ok := root["events"]
+	if !ok {
+		return
+	}
+	state.RawEventData = data
+	var ev struct {
+		Events []apiGameEvent `json:"Events"`
+	}
+	if err := json.Unmarshal(data, &ev); err == nil {
+		state.Events = make([]GameEvent, len(ev.Events))
+		for i, e := range ev.Events {
+			state.Events[i] = e.toGameEvent()
+		}
+	}
 }
 
 type apiGameEvent struct {

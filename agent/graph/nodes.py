@@ -61,97 +61,160 @@ def parse_event(state: CoachState) -> CoachState:
 
 # ── 信号检测 ──────────────────────────────────────────
 
+# 死亡时仍需推送的目标类事件
+_OBJECTIVE_EVENTS = ("dragon_soon", "baron_soon")
+
+# 静态信号表：事件名 → (优先级下限, 附加信号)
+_SIGNAL_TABLE: dict[str, tuple[int, list[str]]] = {
+    "dragon_soon": (2, ["objective_stage"]),
+    "baron_soon": (2, ["objective_stage"]),
+    "item_purchased": (1, ["power_spike"]),
+    "item_upgraded": (1, ["power_spike"]),
+    "gold_spike": (1, ["power_spike"]),
+    "kill": (2, ["kill_secured"]),
+    "death": (2, ["player_died"]),
+    "teamfight_detected": (2, ["teamfight"]),
+    "enemy_gold_lead": (2, ["enemy_power_spike", "danger"]),
+    "enemy_fed": (3, ["enemy_fed", "danger"]),
+    "enemy_item_purchased": (1, ["enemy_power_spike"]),
+}
+
+
+def _hp_pct(active: dict) -> float:
+    """活跃玩家的血量百分比（max_hp<=0 时视为满血）."""
+    hp = active.get("health", 1)
+    max_hp = active.get("max_health", 1)
+    return hp / max_hp * 100 if max_hp > 0 else 100
+
+
+def _is_in_fountain(active: dict) -> bool:
+    """玩家是否在自家泉水附近（已回城/回复中，低血量提示无意义）.
+
+    蓝队泉水 ≈ (0,0)，红队泉水 ≈ (14500,14500)，队伍未知时两侧都查.
+    """
+    from models.state import get_position_distance, is_position_valid
+
+    active_pos = active.get("position", {"x": 0, "y": 0})
+    if not is_position_valid(active_pos):
+        return False
+
+    team = active.get("team", "")
+    if team == "CHAOS":
+        fountains = [{"x": 14500, "y": 14500}]
+    elif team == "ORDER":
+        fountains = [{"x": 0, "y": 0}]
+    else:
+        fountains = [{"x": 0, "y": 0}, {"x": 14500, "y": 14500}]
+
+    return any(get_position_distance(active_pos, f) < 1500 for f in fountains)
+
+
 def detect_signals(state: CoachState) -> CoachState:
     """清洗无效事件 + 检测关键信号 + 计算优先级."""
     name = state["event_name"]
     data = state["event_data"]
     gs = state.get("game_state", {})
 
-    signals: list[str] = []
     # 上游（_event_priority / SKILL_REGISTRY）已给出基础优先级，这里只做上调
     priority = state.get("priority", 1) or 1
 
-    # 死亡时跳过非龙/大龙事件
     active = gs.get("active_player", {}) if gs else {}
-    hp = active.get("health", 1)
-    max_hp = active.get("max_health", 1)
-    hp_pct = hp / max_hp * 100 if max_hp > 0 else 100
+    hp_pct = _hp_pct(active)
 
-    if hp_pct == 0 and name not in ("dragon_soon", "baron_soon"):
+    # 死亡时跳过非龙/大龙事件
+    if hp_pct == 0 and name not in _OBJECTIVE_EVENTS:
         logger.debug("detect_signals: skip (dead) %s", name)
         return {**state, "is_valid": False, "skip_reason": "player_dead"}
 
-    # ── 信号分类 ──
     if name == "low_health":
-        # 上下文抑制：避免无意义的低血量提示
-        from models.state import get_position_distance, is_position_valid
-
-        # 1. 在泉水附近 — 已经回城/正在回复，不发
-        #    蓝队泉水 ≈ (0,0)，红队泉水 ≈ (14500,14500)，队伍未知时两侧都查
-        active_pos = active.get("position", {"x": 0, "y": 0})
-        if is_position_valid(active_pos):
-            team = active.get("team", "")
-            fountains = (
-                [{"x": 14500, "y": 14500}] if team == "CHAOS"
-                else [{"x": 0, "y": 0}] if team == "ORDER"
-                else [{"x": 0, "y": 0}, {"x": 14500, "y": 14500}]
-            )
-            for f in fountains:
-                if get_position_distance(active_pos, f) < 1500:
-                    logger.debug("detect_signals: skip low_health (in fountain)")
-                    return {**state, "is_valid": False, "skip_reason": "in_fountain"}
-
+        # 上下文抑制：在泉水附近说明已回城/回复中，不发
+        if _is_in_fountain(active):
+            logger.debug("detect_signals: skip low_health (in fountain)")
+            return {**state, "is_valid": False, "skip_reason": "in_fountain"}
         priority = max(priority, 3)
-        signals.append("low_health")
+        signals = ["low_health"]
         if hp_pct < 15:
             signals.append("critically_low")
-    elif name == "dragon_soon":
-        priority = max(priority, 2)
-        signals.append("objective_stage")
-        if data.get("seconds_left", 99) <= 10:
+    else:
+        floor, base_signals = _SIGNAL_TABLE.get(name, (1, []))
+        signals = list(base_signals)
+        priority = max(priority, floor)
+        # 目标临近：10s 内出生 → 提到最高优先级
+        if name in _OBJECTIVE_EVENTS and data.get("seconds_left", 99) <= 10:
             signals.append("imminent_objective")
             priority = 3
-    elif name == "baron_soon":
-        priority = max(priority, 2)
-        signals.append("objective_stage")
-        if data.get("seconds_left", 99) <= 10:
-            signals.append("imminent_objective")
-            priority = 3
-    elif name == "item_purchased":
-        signals.append("power_spike")
-    elif name == "item_upgraded":
-        signals.append("power_spike")
-    elif name == "gold_spike":
-        signals.append("power_spike")
-    elif name == "kill":
-        priority = max(priority, 2)
-        signals.append("kill_secured")
-    elif name == "death":
-        priority = max(priority, 2)
-        signals.append("player_died")
-    elif name == "teamfight_detected":
-        priority = max(priority, 2)
-        signals.append("teamfight")
-    elif name == "enemy_gold_lead":
-        priority = max(priority, 2)
-        signals.append("enemy_power_spike")
-        signals.append("danger")
-    elif name == "enemy_fed":
-        priority = max(priority, 3)
-        signals.append("enemy_fed")
-        signals.append("danger")
-    elif name == "enemy_item_purchased":
-        signals.append("enemy_power_spike")
-    elif name in ("item_sold", "enemy_item_sold"):
-        pass
-    elif name in ("laning_check", "macro_check", "jungle_check", "strategy_check"):
-        pass
 
     logger.debug("detect_signals: %s signals=%s priority=%d", name, signals, priority)
     return {**state, "signals": signals, "priority": priority, "is_valid": True}
 
 
 # ── 路由到 Skill ──────────────────────────────────────
+
+def _rag_query_enemy_item(state: CoachState, resolver) -> list[str]:
+    """enemy_item_purchased：翻译 itemID→名称并写回 event_data，返回查询片段."""
+    event_data = state.get("event_data", {})
+    enemy_champ = event_data.get("enemy_champion", "")
+    enemy_name = event_data.get("enemy_name", "")
+    item_ids = event_data.get("item_ids", [])
+
+    # 翻译 itemID → 物品名称
+    item_names = resolver.get_names(item_ids)
+    item_descs = [resolver.describe_item(iid) for iid in item_ids]
+
+    # 把名称写回 event_data，后续节点（inject_memory、llm_polish）可直接用
+    state["event_data"]["item_names"] = item_names
+    state["event_data"]["item_descs"] = item_descs
+
+    parts: list[str] = []
+    if enemy_champ:
+        parts.append(f"enemy {enemy_champ} {enemy_name} purchased {' '.join(item_names)} counter build counter items")
+    if item_names:
+        parts.append(f"items {' '.join(item_names)} counter")
+    return parts
+
+
+def _build_rag_query(state: CoachState) -> str:
+    """按事件类型拼接 RAG 检索查询串（skill message + 事件上下文）."""
+    from knowledge.item_resolver import get_item_resolver
+
+    event_name = state["event_name"]
+    event_data = state.get("event_data", {})
+    parts = [state["skill_message"]]
+
+    if event_name == "dragon_soon":
+        parts.append("dragon fight positioning objective strategy")
+    elif event_name == "baron_soon":
+        parts.append("baron fight positioning objective strategy")
+    elif event_name == "low_health":
+        parts.append("when low health recall sustain laning recovery")
+    elif event_name == "item_purchased":
+        parts.append("recommended next items build order")
+    elif event_name == "item_sold":
+        name = get_item_resolver().get_name(event_data.get("item_id", 0))
+        parts.append(f"sold {name} freed inventory slot next item build order")
+    elif event_name == "item_upgraded":
+        resolver = get_item_resolver()
+        old_name = resolver.get_name(event_data.get("old_item_id", 0))
+        new_name = resolver.get_name(event_data.get("new_item_id", 0))
+        parts.append(f"upgraded {old_name} to {new_name} completed item powerspike")
+    elif event_name == "enemy_item_purchased":
+        parts.extend(_rag_query_enemy_item(state, get_item_resolver()))
+    elif event_name == "kill":
+        kills = event_data.get("total_kills", 1)
+        parts.append(f"after getting kill {kills} what to do objective push tower dragon capitalize advantage")
+    elif event_name == "enemy_gold_lead":
+        enemy_champ = event_data.get("enemy_champion", "")
+        gap = event_data.get("gold_gap", 0)
+        parts.append(f"enemy {enemy_champ} has {gap:.0f} gold lead how to play from behind counter fed enemy")
+    elif event_name == "enemy_fed":
+        enemy_champ = event_data.get("enemy_champion", "")
+        kills = event_data.get("kills", 0)
+        parts.append(f"enemy {enemy_champ} fed {kills} kills how to shut down shutdown target counter")
+    else:
+        parts.append("strategy tips priority")
+
+    return " ".join(parts)
+
 
 def route_skill(state: CoachState) -> CoachState:
     """事件名 → Skill，加载 SKILL.md 上下文和坑点清单."""
@@ -187,70 +250,71 @@ def route_skill(state: CoachState) -> CoachState:
         len(skill_context), len(skill_gotchas),
     )
 
-    # rag_query: skill message + event context 拼接
-    query_parts = [state["skill_message"]]
-    if state["event_name"] == "dragon_soon":
-        query_parts.append("dragon fight positioning objective strategy")
-    elif state["event_name"] == "baron_soon":
-        query_parts.append("baron fight positioning objective strategy")
-    elif state["event_name"] == "low_health":
-        query_parts.append("when low health recall sustain laning recovery")
-    elif state["event_name"] == "item_purchased":
-        query_parts.append("recommended next items build order")
-    elif state["event_name"] == "item_sold":
-        from knowledge.item_resolver import get_item_resolver
-        resolver = get_item_resolver()
-        sold_id = state.get("event_data", {}).get("item_id", 0)
-        name = resolver.get_name(sold_id)
-        query_parts.append(f"sold {name} freed inventory slot next item build order")
-    elif state["event_name"] == "item_upgraded":
-        from knowledge.item_resolver import get_item_resolver
-        resolver = get_item_resolver()
-        old_id = state.get("event_data", {}).get("old_item_id", 0)
-        new_id = state.get("event_data", {}).get("new_item_id", 0)
-        old_name = resolver.get_name(old_id)
-        new_name = resolver.get_name(new_id)
-        query_parts.append(f"upgraded {old_name} to {new_name} completed item powerspike")
-    elif state["event_name"] == "enemy_item_purchased":
-        from knowledge.item_resolver import get_item_resolver
-        resolver = get_item_resolver()
-        enemy_champ = state.get("event_data", {}).get("enemy_champion", "")
-        enemy_name = state.get("event_data", {}).get("enemy_name", "")
-        item_ids = state.get("event_data", {}).get("item_ids", [])
-
-        # 翻译 itemID → 物品名称
-        item_names = resolver.get_names(item_ids)
-        item_descs = [resolver.describe_item(iid) for iid in item_ids]
-
-        # 把名称写回 event_data，后续节点（inject_memory、llm_polish）可直接用
-        state["event_data"]["item_names"] = item_names
-        state["event_data"]["item_descs"] = item_descs
-
-        if enemy_champ:
-            query_parts.append(f"enemy {enemy_champ} {enemy_name} purchased {' '.join(item_names)} counter build counter items")
-        if item_names:
-            query_parts.append(f"items {' '.join(item_names)} counter")
-    elif state["event_name"] == "kill":
-        kills = state.get("event_data", {}).get("total_kills", 1)
-        query_parts.append(f"after getting kill {kills} what to do objective push tower dragon capitalize advantage")
-    elif state["event_name"] == "enemy_gold_lead":
-        event_data = state.get("event_data", {})
-        enemy_champ = event_data.get("enemy_champion", "")
-        gap = event_data.get("gold_gap", 0)
-        query_parts.append(f"enemy {enemy_champ} has {gap:.0f} gold lead how to play from behind counter fed enemy")
-    elif state["event_name"] == "enemy_fed":
-        event_data = state.get("event_data", {})
-        enemy_champ = event_data.get("enemy_champion", "")
-        kills = event_data.get("kills", 0)
-        query_parts.append(f"enemy {enemy_champ} fed {kills} kills how to shut down shutdown target counter")
-    else:
-        query_parts.append("strategy tips priority")
-
-    state["rag_query"] = " ".join(query_parts)
+    state["rag_query"] = _build_rag_query(state)
     return state
 
 
 # ── 向量检索 ──────────────────────────────────────────
+
+def _find_nearest_enemy_champion(
+    all_players: list[dict], active_team: str, active_x: float, active_y: float,
+) -> str:
+    """返回距离活跃玩家最近（<5000）的敌方英雄名，无则空串."""
+    from models.state import is_position_valid
+
+    best_dist = float("inf")
+    nearest = ""
+    for p in all_players:
+        if not p.get("team") or p["team"] == active_team:
+            continue
+        enemy_pos = p.get("position", {})
+        # 坐标有效性校验：排除 (0,0) 等无效坐标
+        if not isinstance(enemy_pos, dict) or not is_position_valid(enemy_pos):
+            continue
+        ex = enemy_pos.get("x", 0)
+        ey = enemy_pos.get("y", 0)
+        dist = ((active_x - ex) ** 2 + (active_y - ey) ** 2) ** 0.5
+        if dist < best_dist and dist < 5000:
+            best_dist = dist
+            nearest = p.get("champion_name", "")
+    return nearest
+
+
+def _resolve_champions(
+    gs: dict, event_name: str, enemy_champion: str,
+) -> tuple[str, str, float]:
+    """从 game_state 解析 (己方英雄名, 敌方英雄名, 游戏时间).
+
+    RAG 检索必须用英雄名（如 "Ahri"），不能用召唤师名；
+    active_player.champion_name 由 sync_active_player 补全.
+    """
+    active_player = gs.get("active_player", {})
+    summoner = active_player.get("summoner_name", "")
+    champion = active_player.get("champion_name", "")
+
+    all_players: list[dict] = gs.get("all_players", [])
+    active_team = ""
+    active_pos = active_player.get("position", {})
+    for p in all_players:
+        if p.get("summoner_name") == summoner:
+            active_team = p.get("team", "")
+            active_pos = p.get("position", active_pos)
+            if not champion:
+                champion = p.get("champion_name", "")
+            break
+
+    # 就近取敌方英雄用于克制攻略（enemy_item_purchased 已有明确敌方，跳过）
+    if active_team and active_pos and event_name != "enemy_item_purchased":
+        active_x = active_pos.get("x", 0) if isinstance(active_pos, dict) else 0
+        active_y = active_pos.get("y", 0) if isinstance(active_pos, dict) else 0
+        nearest = _find_nearest_enemy_champion(
+            all_players, active_team, active_x, active_y,
+        )
+        if nearest:
+            enemy_champion = nearest
+
+    return champion, enemy_champion, gs.get("game_time", 0)
+
 
 async def retrieve_knowledge(state: CoachState) -> CoachState:
     """ChromaDB RAG 检索 — 聚合己方+敌方英雄攻略、游戏机制等多源知识."""
@@ -259,55 +323,19 @@ async def retrieve_knowledge(state: CoachState) -> CoachState:
         return state
 
     gs = state.get("game_state", {})
-    champion = ""
-    enemy_champion = ""
-    game_time = 0.0
     event_name = state.get("event_name", "")
 
     # ★ enemy events: 直接用事件数据中的敌方英雄（Go 侧填的是 ChampionName）
+    enemy_champion = ""
     if event_name in ("enemy_item_purchased", "enemy_gold_lead", "enemy_fed"):
-        event_data = state.get("event_data", {})
-        enemy_champion = event_data.get("enemy_champion", "")
+        enemy_champion = state.get("event_data", {}).get("enemy_champion", "")
 
+    champion = ""
+    game_time = 0.0
     if gs:
-        active_player = gs.get("active_player", {})
-        summoner = active_player.get("summoner_name", "")
-        # ★ RAG 检索必须用英雄名（如 "Ahri"），不能用召唤师名；
-        #   active_player.champion_name 由 sync_active_player 补全
-        champion = active_player.get("champion_name", "")
-
-        all_players: list[dict] = gs.get("all_players", [])
-        active_team = ""
-        active_pos = active_player.get("position", {})
-        for p in all_players:
-            if p.get("summoner_name") == summoner:
-                active_team = p.get("team", "")
-                active_pos = p.get("position", active_pos)
-                if not champion:
-                    champion = p.get("champion_name", "")
-                break
-
-        if active_team and active_pos and event_name != "enemy_item_purchased":
-            active_x = active_pos.get("x", 0) if isinstance(active_pos, dict) else 0
-            active_y = active_pos.get("y", 0) if isinstance(active_pos, dict) else 0
-            best_dist = float("inf")
-            from models.state import is_position_valid
-            for p in all_players:
-                if p.get("team") and p["team"] != active_team:
-                    enemy_pos = p.get("position", {})
-                    if isinstance(enemy_pos, dict):
-                        # ★ 坐标有效性校验：排除 (0,0) 等无效坐标
-                        if not is_position_valid(enemy_pos):
-                            continue
-                        ex = enemy_pos.get("x", 0)
-                        ey = enemy_pos.get("y", 0)
-                        dist = ((active_x - ex) ** 2 + (active_y - ey) ** 2) ** 0.5
-                        if dist < best_dist and dist < 5000:
-                            best_dist = dist
-                            # ★ 用英雄名检索敌方攻略
-                            enemy_champion = p.get("champion_name", "")
-
-        game_time = gs.get("game_time", 0)
+        champion, enemy_champion, game_time = _resolve_champions(
+            gs, event_name, enemy_champion,
+        )
 
     rag_query = state.get("rag_query", "")
 
@@ -321,11 +349,7 @@ async def retrieve_knowledge(state: CoachState) -> CoachState:
         event_query=rag_query,
     )
 
-    if aggregated:
-        state["rag_docs"] = [aggregated]
-    else:
-        state["rag_docs"] = []
-
+    state["rag_docs"] = [aggregated] if aggregated else []
     logger.debug("retrieve: %d aggregated docs for %s", len(state["rag_docs"]), event_name)
     return state
 
@@ -427,6 +451,37 @@ async def validate(state: CoachState) -> CoachState:
 
 # ── 发布 ──────────────────────────────────────────────
 
+def _tip_stale_reason(
+    event_name: str, event_data: dict, gs: dict, has_latest: bool,
+) -> str:
+    """时效性检查：返回应跳过发布的原因，空串表示仍然有效."""
+    active = gs.get("active_player", {}) if gs else {}
+    hp_pct = _hp_pct(active)
+
+    # low_health: 血量已经恢复 > 50% → 取消
+    if event_name == "low_health" and hp_pct > 50:
+        return "hp_recovered"
+
+    # dragon_soon / baron_soon: 目标已出生（计时器消失）→ 提示已过时
+    if event_name == "dragon_soon" and has_latest and not gs.get("dragon_timer"):
+        return "objective_gone"
+    if event_name == "baron_soon" and has_latest and not gs.get("baron_timer"):
+        return "objective_gone"
+
+    # item_purchased: 装备已不在栏位 → 取消
+    # （仅检查己方购买；enemy_item_purchased 是敌方装备，与我方栏位无关）
+    if event_name == "item_purchased" and active.get("items"):
+        bought_id = event_data.get("item_id", 0)
+        current_ids = {
+            (it.get("item_id") or it.get("itemID", 0))
+            for it in active.get("items", [])
+        }
+        if bought_id and bought_id not in current_ids:
+            return "items_gone"
+
+    return ""
+
+
 async def publish(state: CoachState) -> CoachState:
     """标记 tip 输出，含时效性检查（对比最新 state，而非事件时的旧快照）."""
     event_name = state.get("event_name", "")
@@ -444,35 +499,10 @@ async def publish(state: CoachState) -> CoachState:
     gs = latest or state.get("game_state", {})
 
     if gs:
-        active = gs.get("active_player", {}) if gs else {}
-        hp = active.get("health", 1)
-        max_hp = active.get("max_health", 1)
-        hp_pct = hp / max_hp * 100 if max_hp > 0 else 100
-
-        # low_health: 血量已经恢复 > 50% → 取消
-        if event_name == "low_health" and hp_pct > 50:
-            logger.debug("publish: skip low_health (HP recovered to %.0f%%)", hp_pct)
-            return {**state, "should_publish": False, "skip_reason": "hp_recovered"}
-
-        # dragon_soon / baron_soon: 目标已出生（计时器消失）→ 提示已过时
-        if event_name == "dragon_soon" and latest is not None and not gs.get("dragon_timer"):
-            logger.debug("publish: skip dragon_soon (dragon already spawned)")
-            return {**state, "should_publish": False, "skip_reason": "objective_gone"}
-        if event_name == "baron_soon" and latest is not None and not gs.get("baron_timer"):
-            logger.debug("publish: skip baron_soon (baron already spawned)")
-            return {**state, "should_publish": False, "skip_reason": "objective_gone"}
-
-        # item_purchased: 装备已不在栏位 → 取消
-        # （仅检查己方购买；enemy_item_purchased 是敌方装备，与我方栏位无关）
-        if event_name == "item_purchased" and active.get("items"):
-            bought_id = event_data.get("item_id", 0)
-            current_ids = {
-                (it.get("item_id") or it.get("itemID", 0))
-                for it in active.get("items", [])
-            }
-            if bought_id and bought_id not in current_ids:
-                logger.debug("publish: skip %s (item no longer in inventory)", event_name)
-                return {**state, "should_publish": False, "skip_reason": "items_gone"}
+        reason = _tip_stale_reason(event_name, event_data, gs, latest is not None)
+        if reason:
+            logger.debug("publish: skip %s (%s)", event_name, reason)
+            return {**state, "should_publish": False, "skip_reason": reason}
 
     if redis:
         # ★ 去重 TTL = SKILL.md 声明的 cooldown
