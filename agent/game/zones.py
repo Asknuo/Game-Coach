@@ -14,7 +14,7 @@ LOL 召唤师峡谷地图坐标系：
   - 中路一塔红队: 约 (9762, 8950)
 
 用法:
-    from map_zones import resolve_zone
+    from game.zones import resolve_zone
     zone = resolve_zone(9866, 4414)  # → "小龙坑"
 """
 

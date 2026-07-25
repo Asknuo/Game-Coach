@@ -1,8 +1,11 @@
 """LangGraph AgentState — coaching 流水线中流转的状态."""
 
-from typing import Any, NotRequired, Optional
+from typing import TYPE_CHECKING, Any, NotRequired, Optional
 
 from typing_extensions import TypedDict
+
+if TYPE_CHECKING:
+    from models.state import CoachEvent, GameState
 
 
 class CoachState(TypedDict):
@@ -48,3 +51,32 @@ class CoachState(TypedDict):
 
     # ── Output ──
     tip: dict[str, Any] | None         # CoachingTip.model_dump(), None 表示不发送
+
+
+def build_initial_state(
+    event: "CoachEvent",
+    snapshot: "GameState | None",
+    signals: list[str],
+    priority: int,
+    session_id: str = "default",
+) -> CoachState:
+    """构建进入流水线的初始状态（中间字段由 parse_event 重置）."""
+    return {
+        "event": event.model_dump(),
+        "game_state": snapshot.model_dump() if snapshot else None,
+        "session_id": session_id,
+        "event_name": "",
+        "event_data": {},
+        "signals": signals,
+        "priority": priority,
+        "is_valid": True,
+        "skill_name": "",
+        "skill_message": "",
+        "rag_query": "",
+        "rag_docs": [],
+        "memory_context": "",
+        "polished_message": "",
+        "should_publish": False,
+        "skip_reason": "",
+        "tip": None,
+    }
