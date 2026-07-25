@@ -1,6 +1,6 @@
 """LangGraph AgentState — coaching 流水线中流转的状态."""
 
-from typing import TYPE_CHECKING, Any, NotRequired, Optional
+from typing import TYPE_CHECKING, Any
 
 from typing_extensions import TypedDict
 
@@ -73,6 +73,8 @@ def build_initial_state(
         "skill_name": "",
         "skill_message": "",
         "rag_query": "",
+        "skill_context": "",
+        "skill_gotchas": "",
         "rag_docs": [],
         "memory_context": "",
         "polished_message": "",

@@ -5,18 +5,6 @@ from knowledge.embedder import Embedder
 
 logger = logging.getLogger(__name__)
 
-_instance: "Retriever | None" = None
-
-
-def set_retriever(r: "Retriever") -> None:
-    """由 app.py 启动时注入，供所有 Skill 模块通过 get_retriever() 获取。"""
-    global _instance
-    _instance = r
-
-
-def get_retriever() -> "Retriever | None":
-    return _instance
-
 
 class Retriever:
     """统一检索接口，被 Skills 调用。

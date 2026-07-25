@@ -11,10 +11,10 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from graph import build_coaching_graph, set_injections
+from graph import GraphDeps, build_coaching_graph
 from knowledge.chroma_store import ChromaStore
 from knowledge.embedder import Embedder
-from knowledge.retriever import Retriever, set_retriever
+from knowledge.retriever import Retriever
 from llm.openai_client import OpenAIClient
 from memory.coach_engine import CoachEngine
 from memory.injector import MemoryInjector
@@ -66,7 +66,6 @@ def build_context() -> AppContext:
 
     # ── 向量知识库 ──
     retriever = Retriever(ChromaStore(), Embedder())
-    set_retriever(retriever)  # TODO(P3): 随全局注入机制一起移除
 
     # ── DeerFlow 风格三级记忆 ──
     memory_store = MemoryStore()
@@ -81,16 +80,15 @@ def build_context() -> AppContext:
     # ── 防抖队列（LangGraph 的前置过滤层） ──
     queue = MemoryQueue(window=15.0, max_per_window=2, skill_cooldown=25.0)
 
-    # ── LangGraph Coaching 图 ──
-    coaching_graph = build_coaching_graph()
-    set_injections(  # TODO(P3): 改为 GraphDeps 显式构造注入
+    # ── LangGraph Coaching 图（显式依赖注入） ──
+    coaching_graph = build_coaching_graph(GraphDeps(
         planner=planner,
         llm=llm,
         retriever=retriever,
         injector=injector,
         redis_store=redis_store,
         memory=memory,
-    )
+    ))
 
     return AppContext(
         redis_store=redis_store,

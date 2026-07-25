@@ -4,16 +4,8 @@ import logging
 
 from langgraph.graph import END, StateGraph
 
-from graph.nodes import (
-    detect_signals,
-    inject_memory,
-    llm_polish,
-    parse_event,
-    publish,
-    retrieve_knowledge,
-    route_skill,
-    validate,
-)
+from graph.deps import GraphDeps
+from graph.nodes import GraphNodes
 from graph.state import CoachState
 
 logger = logging.getLogger(__name__)
@@ -43,7 +35,7 @@ def _after_validate(state: CoachState) -> str:
     return END
 
 
-def build_coaching_graph() -> StateGraph:
+def build_coaching_graph(deps: GraphDeps | None = None) -> StateGraph:
     """构建并编译 Coaching Agent 状态图.
 
     Flow:
@@ -67,17 +59,18 @@ def build_coaching_graph() -> StateGraph:
                                       ├─ skip → END
                                       └─ publish → END
     """
+    nodes = GraphNodes(deps or GraphDeps())
     builder = StateGraph(CoachState)
 
     # 节点注册
-    builder.add_node("parse_event", parse_event)
-    builder.add_node("detect_signals", detect_signals)
-    builder.add_node("route_skill", route_skill)
-    builder.add_node("retrieve_knowledge", retrieve_knowledge)
-    builder.add_node("inject_memory", inject_memory)
-    builder.add_node("llm_polish", llm_polish)
-    builder.add_node("validate", validate)
-    builder.add_node("publish", publish)
+    builder.add_node("parse_event", nodes.parse_event)
+    builder.add_node("detect_signals", nodes.detect_signals)
+    builder.add_node("route_skill", nodes.route_skill)
+    builder.add_node("retrieve_knowledge", nodes.retrieve_knowledge)
+    builder.add_node("inject_memory", nodes.inject_memory)
+    builder.add_node("llm_polish", nodes.llm_polish)
+    builder.add_node("validate", nodes.validate)
+    builder.add_node("publish", nodes.publish)
 
     # 边
     builder.set_entry_point("parse_event")

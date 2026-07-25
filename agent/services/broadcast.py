@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import WebSocket
 
@@ -29,8 +29,8 @@ async def broadcast_tip_json(ctx: "AppContext", tip_json: str) -> None:
 
 async def record_advice_context(
     ctx: "AppContext",
-    tip: dict,
-    result: dict,
+    tip: dict[str, Any],
+    result: dict[str, Any],
     latest_state: GameState | None,
 ) -> None:
     """记录"已给建议"的上下文，供后续帧检查玩家是否采纳（反馈闭环）."""
@@ -49,7 +49,7 @@ async def record_advice_context(
     )
 
 
-async def check_advice_feedback(ctx: "AppContext", payload: dict) -> None:
+async def check_advice_feedback(ctx: "AppContext", payload: dict[str, Any]) -> None:
     """每帧 state 到达时检查建议反馈.
 
     状态机：followed → 加置信度；pending → 下帧继续观察；expired → 降置信度。
