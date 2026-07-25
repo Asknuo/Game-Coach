@@ -36,8 +36,9 @@ chroma_data/
 
 # ── 运行时数据 ──
 *.log
-memory/
-agent/memory/
+*.bak
+agent/memory/data/
+agent/chroma_data/
 
 # ── IDE ──
 .idea/
