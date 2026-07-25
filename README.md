@@ -6,7 +6,7 @@
 LOL Client ─┬─ Live Client Data API (127.0.0.1:2999) ─────┐
             └─ LCU API (lockfile 端口) ────────────────────┤
                                                            ▼
-                                                  Collector (Go / Python)
+                                                  Collector (Go)
                                                        │
                                          WebSocket state + event 推送
                                                        │
@@ -76,18 +76,37 @@ LOL Client ─┬─ Live Client Data API (127.0.0.1:2999) ─────┐
 ```
 Game Coach/
 ├── agent/                          # Python — AI Agent (FastAPI + LangGraph)
-│   ├── app.py                      #   主入口：WebSocket、LangGraph 编排、生命周期
+│   ├── app.py                      #   主入口：组件装配 + 生命周期 + 路由注册
+│   ├── context.py                  #   AppContext — 共享组件容器（替代全局变量）
 │   ├── requirements.txt            #   Agent 依赖（含 pyyaml）
 │   ├── Dockerfile                  #   Docker 镜像（基于 python:3.12-slim）
+│   │
+│   ├── routers/                    # 端点层
+│   │   ├── http.py                 #   /health /tips/latest /games
+│   │   └── ws.py                   #   /ws/collector /ws/overlay
+│   │
+│   ├── services/                   # 业务服务层
+│   │   ├── session.py              #   CollectorSession — WS 会话 + 流水线调度
+│   │   ├── events.py               #   事件分类（紧急度/优先级/死亡过滤/LCU 大厅事件）
+│   │   ├── broadcast.py            #   tip 广播 + 建议反馈闭环
+│   │   └── lifecycle.py            #   后台摄入 / 周期保存 / 断连复盘
+│   │
+│   ├── game/
+│   │   └── zones.py                #   召唤师峡谷 40+ 区域语义化（坐标 → 区域名）
 │   │
 │   ├── models/                     # 数据模型（Pydantic）
 │   │   └── state.py                #   GameState / CoachEvent / CoachingTip / WSMessage / Vec2 / Player 等
 │   │
 │   ├── graph/                      # LangGraph 图编排（状态机流水线）
-│   │   ├── state.py                #   CoachState TypedDict — 20+ 字段在 8 个节点间流转
-│   │   ├── nodes.py                #   8 个节点函数：parse_event → detect_signals → route_skill
-│   │   │                           #     → retrieve_knowledge → inject_memory → llm_polish → validate → publish
-│   │   └── builder.py              #   StateGraph 构建器 + 3 个条件路由分支
+│   │   ├── state.py                #   CoachState TypedDict + build_initial_state()
+│   │   ├── deps.py                 #   GraphDeps — 节点依赖显式注入容器
+│   │   ├── builder.py              #   StateGraph 构建器 + 3 个条件路由分支
+│   │   └── nodes/                  #   8 节点按流水线阶段拆分为 Mixin 包
+│   │       ├── parsing.py          #     parse_event / detect_signals
+│   │       ├── routing.py          #     route_skill + RAG 查询构建
+│   │       ├── retrieval.py        #     retrieve_knowledge
+│   │       ├── generation.py       #     inject_memory / llm_polish
+│   │       └── validation.py       #     validate / publish
 │   │
 │   ├── planner/                    # 事件 → Skill 路由器
 │   │   └── planner.py              #   Planner 类 — 启动时从 SKILL.md frontmatter 自动构建注册表
@@ -134,7 +153,11 @@ Game Coach/
 │   │   ├── chroma_store.py         #   ChromaDB 封装 — 管理 6 个 Collection，cosine 相似度
 │   │   ├── embedder.py             #   Embedding — OpenAI 或火山引擎豆包（Doubao）
 │   │   ├── retriever.py            #   统一检索接口 + aggregate_coaching_context() 多源聚合
-│   │   ├── ingest.py               #   数据摄入脚本 + GuideGenerator 自动生成 172 英雄攻略
+│   │   ├── item_resolver.py        #   itemID ↔ 物品名翻译缓存
+│   │   ├── ingest/                 #   摄入包（python -m knowledge.ingest）
+│   │   │   ├── pipeline.py         #     Ingestor — 摄入流水线
+│   │   │   ├── formatters.py       #     Item/Champion 数据 → 自然语言
+│   │   │   └── guide_generator.py  #     GuideGenerator 自动生成 172 英雄攻略
 │   │   ├── data_fetcher.py         #   Data Dragon API 数据抓取（英雄/装备/符文/召唤师技能）
 │   │   └── data/                   #   缓存数据 + 手工 markdown 攻略
 │   │
@@ -146,27 +169,26 @@ Game Coach/
 │   │   ├── queue.py                #   MemoryQueue — 防抖队列（15s 窗口 / 最多 2 条）
 │   │   └── coach_engine.py         #   CoachEngine — 对局断开时生成摘要
 │   │
-│   ├── collector/                  # Python 版采集器（两个数据源 + 桥接层）
-│   │   ├── bridge.py               #   CollectorBridge — 串联 Live + LCU → Agent WebSocket
-│   │   ├── live_client.py          #   LiveClientCollector — Live Client Data API（游戏内数据）
-│   │   └── lcu_client.py           #   LCUClientCollector — LCU API（大厅数据：召唤师/熟练度/
-│   │                               #    符文/GameFlow 阶段追踪/英雄选择）
-│   │
-├── collector/                       # Go — 轻量版采集器 & 事件检测（可选，性能更好）
-│   ├── cmd/
-│   │   ├── main.go                 #   主入口：轮询 + 事件检测 + WS 发送，信号处理
-│   │   └── config.go               #   YAML 配置加载 + 环境变量覆盖
-│   ├── config/
-│   │   └── config.yaml             #   默认配置（agent_ws_url / poll_interval_sec / lockfile_path）
+│   └── tests/                      # pytest — 节点逻辑 / 记忆 / 队列
+│
+├── collector/                       # Go — 采集器 & 事件检测（含 LCU 大厅数据）
+│   ├── main.go                     #   主入口：轮询 + 事件检测 + WS 发送，信号处理
+│   ├── config.yaml                 #   默认配置（agent_ws_url / poll_interval / lockfile_path）
 │   ├── internal/
+│   │   ├── config/                 #   Viper 配置加载 + 环境变量覆盖
 │   │   ├── lol/
-│   │   │   ├── client.go           #   HTTP 客户端 — 自动解析 lockfile 获取端口/密码
-│   │   │   ├── parser.go           #   JSON 解析 — 完整的 Go 结构体映射
-│   │   │   ├── state.go            #   GameState 工具方法 — IsInGame / EnemyPlayers / ItemCount
-│   │   │   └── objectives.go       #   ObjectiveTracker — 龙/大龙刷新追踪 + 事件去重
+│   │   │   ├── client.go           #   Live Client Data API 客户端 + JSON 结构体映射
+│   │   │   └── game_state.go       #   GameState 工具方法 — IsInGame / EnemyPlayers / ItemCount
 │   │   ├── event/
-│   │   │   ├── detector.go         #   6 种事件检测 — 龙刷新/低血量/买装备/野区/策略 + 定时器
-│   │   │   └── engine.go           #   EventEngine — 带冷却的检测封装
+│   │   │   ├── detector.go         #   Detector 主调度（Detect 分发 + 生命周期）
+│   │   │   ├── detector_objectives.go  # 龙/大龙/低血量
+│   │   │   ├── detector_player.go      # 活跃玩家事件（死亡/装备/击杀/金币）
+│   │   │   ├── detector_enemy.go       # 敌方追踪（装备/经济领先/超神）
+│   │   │   └── detector_periodic.go    # 定时检查（对线/宏观/团战）
+│   │   ├── lcu/                    #   LCU API（大厅数据：召唤师/熟练度/符文/选人/GameFlow）
+│   │   │   ├── client.go           #   lockfile 自动发现端口/密码 + REST 调用
+│   │   │   ├── poller.go           #   大厅事件轮询 → Agent
+│   │   │   └── types.go            #   LCU 数据结构
 │   │   └── sender/
 │   │       └── websocket.go        #   WebSocket 发送器 — 双工，接收 Agent tip 日志打印
 │   ├── go.mod
@@ -186,7 +208,7 @@ Game Coach/
 | 依赖 | 版本 | 说明 |
 |------|------|------|
 | Python | 3.12+ | Agent 运行环境 |
-| Go | 1.22+ | Go 版 Collector（可选，也可用 Python 版 bridge.py） |
+| Go | 1.22+ | Collector 运行环境 |
 | Docker | 最新 | 运行 Redis（也可本地安装） |
 | LOL 客户端 | 最新 | 需要对局进行中才能使用 Live Client API |
 | Redis | 7.x | 去重和状态缓存（Docker 或本地均可） |
@@ -288,19 +310,12 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 
 ### 6. 启动 Collector
 
-**方式 A：Go 版（轻量，推荐）**
-
 ```bash
 cd collector
-go run ./cmd
+go run .
 ```
 
-**方式 B：Python 版（含 LCU 大厅数据）**
-
-```bash
-cd agent
-python -m collector.bridge
-```
+Collector 会自动检测 LOL lockfile；配置 LCU 后还会上报大厅事件（符文/选人/熟练度）。
 
 ### 7. 验证
 
@@ -561,16 +576,14 @@ ChromaDB (chroma_data/)
 
 ## 数据采集
 
-### 两套 Collector
+### Collector（Go）
 
-| 特性 | Go 版 (collector/) | Python 版 (agent/collector/) |
-|------|-------------------|------------------------------|
-| 语言 | Go 1.22+ | Python 3.12+ |
-| 数据源 | Live Client API | Live Client API + LCU API |
-| 事件检测 | Go 原生（内置冷却 Engine） | Python（回调通知回调） |
-| 大厅数据 | 无 | 召唤师信息 / 英雄熟练度 / 符文 / GameFlow 阶段 |
-| 性能 | 轻量，低资源占用 | 功能丰富，依赖较多 |
-| 推荐 | ✅ 生产环境 | 开发 / 需要大厅数据时 |
+| 特性 | 说明 |
+|------|------|
+| 语言 | Go 1.22+，轻量低资源占用 |
+| 游戏内数据 | Live Client API（`127.0.0.1:2999`） |
+| 大厅数据 | LCU API — 召唤师信息 / 英雄熟练度 / 符文 / 选人 / GameFlow 阶段 |
+| 事件检测 | Go 原生 Detector，按事件族拆分文件 |
 
 ### 检测的事件
 
@@ -588,7 +601,7 @@ ChromaDB (chroma_data/)
 | `teamfight_detected` | 15 秒内 ≥ 3 个击杀事件 | 待实现 |
 | `game_end` | GameFlow → EndOfGame / Collector 断开 | LCU API / WS 断开 |
 
-### LCU 阶段追踪（仅 Python 版）
+### LCU 阶段追踪
 
 ```
 None → Lobby → Matchmaking → ReadyCheck → ChampSelect → InProgress → EndOfGame
