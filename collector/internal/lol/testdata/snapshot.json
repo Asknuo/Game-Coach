@@ -1,0 +1,31 @@
+{
+  "gameData": {"gameTime": 645.0},
+  "activePlayer": {
+    "summonerName": "Ahri",
+    "level": 9,
+    "currentGold": 3200,
+    "championStats": {"currentHealth": 500, "maxHealth": 1000},
+    "items": [{"itemID": 1056, "slot": 0}, {"itemID": 3020, "slot": 1}]
+  },
+  "allPlayers": [
+    {
+      "summonerName": "Ahri", "team": "ORDER", "championName": "Ahri", "level": 9,
+      "currentGold": 3200,
+      "scores": {"kills": 3, "deaths": 1, "assists": 2, "creepScore": 150, "health": 500, "maxHealth": 1000},
+      "position": {"x": 7000, "y": 6000},
+      "items": [{"itemID": 1056, "slot": 0}, {"itemID": 3020, "slot": 1}]
+    },
+    {
+      "summonerName": "Zed", "team": "CHAOS", "championName": "Zed", "level": 9,
+      "currentGold": 2900,
+      "scores": {"kills": 2, "deaths": 0, "assists": 1, "creepScore": 140},
+      "items": [{"itemID": 3142, "slot": 0}]
+    }
+  ],
+  "events": {
+    "Events": [
+      {"EventID": 5, "EventName": "ChampionKill", "EventTime": 630.0},
+      {"EventID": 6, "EventName": "DragonKill", "EventTime": 634.0, "DragonType": "Infernal"}
+    ]
+  }
+}

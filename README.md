@@ -598,7 +598,7 @@ ChromaDB (chroma_data/)
 | `baron_soon` | 大龙被击杀 → 下一条刷新时间（6 分钟间隔） | Live Client API event |
 | `laning_check` | < 14 分钟，每 3 分钟（Go detector） | 定时器 |
 | `macro_check` | > 14 分钟，每 5 分钟（Go detector） | 定时器 |
-| `teamfight_detected` | 15 秒内 ≥ 3 个击杀事件 | 待实现 |
+| `teamfight_detected` | 15 秒内 ≥ 3 个击杀事件 | Go Detector（detector_periodic.go，15s 窗口） |
 | `game_end` | GameFlow → EndOfGame / Collector 断开 | LCU API / WS 断开 |
 
 ### LCU 阶段追踪
