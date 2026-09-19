@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -18,9 +19,11 @@ logger = logging.getLogger(__name__)
 async def broadcast_tip_json(ctx: "AppContext", tip_json: str) -> None:
     """向所有 overlay 客户端广播 tip，清理已断开的连接."""
     dead: list[WebSocket] = []
-    for client in ctx.overlay_clients:
+    # 快照遍历：循环体内 await 会让出控制权，/ws/overlay 处理器可能并发增删该 set
+    for client in list(ctx.overlay_clients):
         try:
-            await client.send_text(tip_json)
+            # 每客户端超时：防止一个挂死的客户端阻塞全体广播
+            await asyncio.wait_for(client.send_text(tip_json), timeout=5)
         except Exception:
             dead.append(client)
     for client in dead:

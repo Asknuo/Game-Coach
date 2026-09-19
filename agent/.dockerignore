@@ -1,0 +1,19 @@
+# 构建上下文 ./agent — 以下文件不得进入镜像层
+# （Dockerfile 使用 COPY . .，无此文件会把 .env 密钥烧进镜像）
+
+# ── 敏感配置 ──
+.env
+.env.local
+*.pem
+*.key
+
+# ── Python 缓存 ──
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ── 运行时生成物（Windows 产物与 Linux 容器不兼容，容器内重新 ingest）──
+knowledge/chroma_data/
+chroma_data/
+memory/data/

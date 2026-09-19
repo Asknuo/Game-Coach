@@ -49,14 +49,14 @@ class RedisStore:
         try:
             await self.client.set(self._key(session_id, "state"), json.dumps(state), ex=7200)
         except redis.RedisError:
-            self._memory["state"] = state
+            self._memory[f"state:{session_id}"] = state
 
     async def get_state(self, session_id: str) -> dict[str, Any] | None:
         try:
             raw = await self.client.get(self._key(session_id, "state"))
             return json.loads(raw) if raw else None
         except (redis.RedisError, json.JSONDecodeError):
-            return self._memory.get("state")
+            return self._memory.get(f"state:{session_id}")
 
     # ── Tip 去重（TTL 由 skill cooldown 驱动） ──
 
@@ -116,8 +116,8 @@ class RedisStore:
             raw = await self.client.get(key)
             if raw:
                 advice = json.loads(raw)
+                via_redis = True
         except (redis.RedisError, json.JSONDecodeError):
-            via_redis = False
             advice = self._memory.get("last_advice")
 
         if not advice:

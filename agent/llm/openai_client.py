@@ -73,11 +73,15 @@ class OpenAIClient:
             base_url
             or os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
         )
+        # 客户端级超时：SDK 默认 600s 会让一次挂起停摆整条流水线
+        self._timeout = float(os.getenv("LLM_TIMEOUT", "20"))
 
         if self.api_key:
             self._client = OpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url,
+                timeout=self._timeout,
+                max_retries=0,  # 重试由本类自管，避免与 SDK 内建重试叠加
             )
         else:
             self._client = None
@@ -95,6 +99,8 @@ class OpenAIClient:
             self._aclient = AsyncOpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url,
+                timeout=self._timeout,
+                max_retries=0,
             )
         return self._aclient
 

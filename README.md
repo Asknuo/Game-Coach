@@ -671,6 +671,7 @@ python voice/voice_broadcast.py --min-priority 2   # 只播重要建议
 | `LLM_API_KEY` | LLM API Key | - | ✅ |
 | `LLM_BASE_URL` | LLM API 地址 | `https://api.deepseek.com/v1` | - |
 | `LLM_MODEL` | LLM 模型名称 | `deepseek-chat` | - |
+| `LLM_TIMEOUT` | 单次 LLM 请求超时（秒），防止挂起停摆流水线 | `20` | - |
 | `EMBEDDING_API_KEY` | Embedding API Key | 同 LLM_API_KEY | ✅ |
 | `EMBEDDING_BASE_URL` | Embedding API 地址 | - | - |
 | `EMBEDDING_MODEL` | Embedding 模型 | `text-embedding-3-small` | - |

@@ -70,6 +70,9 @@ async def test_followed_when_hp_recovered():
     assert status == "followed"
     assert skill == "survival"
     assert "hp_recovered" in reason
+    # 回归：via_redis 曾恒为 False → Redis 里的 last_advice 键从不删除，
+    # 同一建议在观察窗口内被每个 state 帧重复判定
+    assert "coach:s:last_advice" not in store._client.data
     # 已消费 → 再次检查应无建议
     status2, _, _ = await store.check_advice_followed("s", _state(hp=900))
     assert status2 == "no_advice"
