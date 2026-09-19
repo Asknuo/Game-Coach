@@ -21,11 +21,12 @@ logger = logging.getLogger(__name__)
 class CollectorSession:
     """Collector WebSocket 会话：state/event 分发 + LangGraph 流水线。"""
 
-    def __init__(self, websocket: WebSocket, ctx: "AppContext"):
+    def __init__(self, websocket: WebSocket, ctx: AppContext):
         self.websocket = websocket
         self.ctx = ctx
         self.latest_state: GameState | None = None
         self._background_tasks: set[asyncio.Task] = set()
+        self._urgent_slots = asyncio.Semaphore(2)
 
     async def run(self) -> None:
         ctx = self.ctx
@@ -45,6 +46,11 @@ class CollectorSession:
         except Exception:
             logger.exception("websocket error")
             ctx.memory_store.save("default", ctx.memory)
+        finally:
+            # 断连后不能让 queue 继续回调死会话（send 失败 + tips_published 虚增）。
+            # == 比较绑定方法安全；用 is 会因每次生成新 bound method 对象而永假。
+            if ctx.queue._handler == self.handle_coaching:
+                ctx.queue.set_handler(None)
 
     async def handle_coaching(self, item: dict) -> None:
         ctx = self.ctx
@@ -123,6 +129,22 @@ class CollectorSession:
         })
 
     def _spawn_coaching(self, item: dict) -> None:
-        task = asyncio.create_task(self.handle_coaching(item))
+        """urgent 事件直启流水线，最多 2 条并发，超载直接丢弃.
+
+        overlay 是瞬时提示不是消息队列，宁可丢也不让紧急事件风暴
+        拉起任意多个 LLM 请求。
+        """
+        if self._urgent_slots.locked():
+            logger.warning(
+                "urgent coaching at capacity — dropping %s", item["event"].name,
+            )
+            self.ctx.metrics["tips_skipped"] += 1
+            return
+
+        async def _limited() -> None:
+            async with self._urgent_slots:
+                await self.handle_coaching(item)
+
+        task = asyncio.create_task(_limited())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)

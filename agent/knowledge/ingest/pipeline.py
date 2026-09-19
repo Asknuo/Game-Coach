@@ -10,12 +10,13 @@ import re
 
 from dotenv import load_dotenv
 
-load_dotenv()
-
 from knowledge.chroma_store import ChromaStore
 from knowledge.embedder import Embedder
 from knowledge.ingest.formatters import ChampionFormatter, ItemFormatter
 from knowledge.ingest.guide_generator import GuideGenerator
+
+# 环境变量由各模块实例化时读取（非 import 时），load 放在 import 后即可
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -27,9 +28,15 @@ _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 class Ingestor:
     """将所有 LOL 游戏数据嵌入 ChromaDB。"""
 
-    def __init__(self):
-        self.store = ChromaStore()
-        self.embedder = Embedder()
+    def __init__(
+        self,
+        store: ChromaStore | None = None,
+        embedder: Embedder | None = None,
+    ):
+        # 必须与主进程共享 ChromaStore：第二个 PersistentClient 删除重建
+        # collection 后，主进程持有的旧句柄会悬空（检索查已删除的集合）。
+        self.store = store or ChromaStore()
+        self.embedder = embedder or Embedder()
 
     def ingest_all(self):
         if not self.store.available:
@@ -57,7 +64,7 @@ class Ingestor:
             logger.warning("items.json not found at %s, run data_fetcher first", items_path)
             return
 
-        with open(items_path, "r", encoding="utf-8") as f:
+        with open(items_path, encoding="utf-8") as f:
             raw_items = json.load(f)
 
         if not raw_items:
@@ -116,7 +123,7 @@ class Ingestor:
             logger.warning("champions.json not found at %s, run data_fetcher first", champions_path)
             return
 
-        with open(champions_path, "r", encoding="utf-8") as f:
+        with open(champions_path, encoding="utf-8") as f:
             champions = json.load(f)
 
         if not champions:
@@ -255,7 +262,7 @@ class Ingestor:
                 continue
             champion = filename[:-3]
             filepath = os.path.join(data_dir, filename)
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, encoding="utf-8") as f:
                 content = f.read()
 
             sections = self._split_sections(content)
@@ -299,7 +306,7 @@ class Ingestor:
             logger.warning("champions.json not found, skip auto guides")
             return
 
-        with open(champions_path, "r", encoding="utf-8") as f:
+        with open(champions_path, encoding="utf-8") as f:
             champions = json.load(f)
 
         if not champions:
@@ -368,7 +375,7 @@ class Ingestor:
             logger.warning("runes.json not found at %s, run data_fetcher first", runes_path)
             return
 
-        with open(runes_path, "r", encoding="utf-8") as f:
+        with open(runes_path, encoding="utf-8") as f:
             rune_paths = json.load(f)
 
         if not rune_paths:
@@ -439,7 +446,7 @@ class Ingestor:
             logger.warning("summoner_spells.json not found at %s, run data_fetcher first", spells_path)
             return
 
-        with open(spells_path, "r", encoding="utf-8") as f:
+        with open(spells_path, encoding="utf-8") as f:
             spells = json.load(f)
 
         if not spells:
@@ -488,7 +495,7 @@ class Ingestor:
             logger.warning("game_info.json not found at %s", game_info_path)
             return
 
-        with open(game_info_path, "r", encoding="utf-8") as f:
+        with open(game_info_path, encoding="utf-8") as f:
             entries = json.load(f)
 
         if not entries:

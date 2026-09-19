@@ -4,7 +4,6 @@ import pytest
 
 from graph import GraphDeps, GraphNodes
 
-
 # ── 测试辅助 ──────────────────────────────────────────
 
 class FakeRedisStore:
@@ -193,3 +192,38 @@ class TestPublish:
             game_state=latest, skill_name="build"))
         assert out.get("tip") is None
         assert out["skip_reason"] == "items_gone"
+
+    @pytest.mark.asyncio
+    async def test_zero_cooldown_skill_skips_dedup_mark(self):
+        """review 声明 cooldown: 0 → 不进去重表（0 不能被 or 吞成默认 120s）."""
+        fake = FakeRedisStore(state=None)
+        out = await _nodes(fake).publish(_coach_state(
+            "game_end", game_state=_game_state(), skill_name="review"))
+        assert out["tip"] is not None
+        assert fake.marked == []
+
+
+# ── route_skill ───────────────────────────────────────
+
+class TestRouteSkill:
+    def test_low_health_message_carries_real_hp_pct(self):
+        """B4 回归：route_skill 必须把真实 game_state 传给 planner，
+        而不是 None —— 否则消息里的 HP% 永远缺失."""
+        from planner.planner import Planner
+
+        nodes = _nodes()
+        nodes.deps.planner = Planner()
+        gs = _game_state(hp=200, max_hp=1000)
+        out = nodes.route_skill(_coach_state("low_health", game_state=gs))
+        assert out["skill_name"] == "survival"
+        assert "20% HP" in out["skill_message"]
+
+    def test_invalid_game_state_falls_back_to_none(self):
+        """game_state 无法解析为 GameState 时不炸，退回无状态消息."""
+        from planner.planner import Planner
+
+        nodes = _nodes()
+        nodes.deps.planner = Planner()
+        out = nodes.route_skill(_coach_state("low_health", game_state="not-a-dict"))
+        assert out["skill_name"] == "survival"
+        assert "HP" not in out["skill_message"]

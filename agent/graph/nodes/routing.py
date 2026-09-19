@@ -80,14 +80,19 @@ class RoutingMixin:
         """事件名 → Skill，加载 SKILL.md 上下文和坑点清单."""
         planner = self.deps.planner
 
-        from models.state import CoachEvent
+        from models.state import CoachEvent, GameState
         from planner.planner import get_skill_context, get_skill_gotchas
 
         event = CoachEvent(
             name=state["event_name"],
             data=state["event_data"],
         )
-        tip = planner.plan(event, None)
+        gs = state.get("game_state")
+        try:
+            snapshot = GameState.model_validate(gs) if gs else None
+        except Exception:
+            snapshot = None
+        tip = planner.plan(event, snapshot)
 
         if not tip:
             logger.debug("route_skill: %s → no skill matched", state["event_name"])

@@ -12,6 +12,14 @@ def _item(name: str, priority: int = 1) -> dict:
     return {"event": CoachEvent(name=name, data={}), "signals": [], "priority": priority}
 
 
+def test_defaults_match_documented_debounce():
+    """默认参数与 README 防抖表 / context.py 实际注入值一致（B6）."""
+    q = MemoryQueue()
+    assert q.window == 15.0
+    assert q.max_per_window == 2
+    assert q.skill_cooldown == 25.0
+
+
 @pytest.mark.asyncio
 async def test_urgent_event_rejected():
     """紧急事件不应入队（由 app 层绕过队列直接处理）."""

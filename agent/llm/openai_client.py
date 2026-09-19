@@ -3,13 +3,7 @@ import logging
 import os
 import time
 
-from openai import AsyncOpenAI, OpenAI
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+from openai import AsyncOpenAI
 
 from models.state import CoachingTip, GameState
 from prompt.coach_prompt import SYSTEM_PROMPT
@@ -47,10 +41,8 @@ class CircuitBreaker:
 class OpenAIClient:
     """LLM 客户端，支持 OpenAI 和 DeepSeek（OpenAI 兼容 API）。
 
-    同步 (polish) 与异步 (apolish / achat) 双通道：
-    - LangGraph 同步节点 / 离线脚本 → polish
-    - async 上下文（FastAPI 事件循环、CoachEngine） → apolish / achat
-      （不会阻塞事件循环）
+    全异步（apolish / achat）：主流水线运行在 FastAPI 事件循环内，
+    同步通道无任何调用方，已随 P1 清理删除。
 
     通过环境变量切换：
     - LLM_API_KEY → API Key
@@ -76,15 +68,6 @@ class OpenAIClient:
         # 客户端级超时：SDK 默认 600s 会让一次挂起停摆整条流水线
         self._timeout = float(os.getenv("LLM_TIMEOUT", "20"))
 
-        if self.api_key:
-            self._client = OpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=self._timeout,
-                max_retries=0,  # 重试由本类自管，避免与 SDK 内建重试叠加
-            )
-        else:
-            self._client = None
         self._aclient: AsyncOpenAI | None = None
 
         # ★ HA #5: 断路器，连续 5 次失败后冷却 60 秒
@@ -103,28 +86,6 @@ class OpenAIClient:
                 max_retries=0,
             )
         return self._aclient
-
-    # ── 同步链路（LangGraph 同步节点用） ──
-
-    # ★ HA #5: 指数退避重试（1s → 2s → 4s，最多 3 次）
-    def _call_with_retry(self, messages: list, max_tokens: int,
-                         temperature: float = 0.7):
-
-        @retry(
-            retry=retry_if_exception_type(Exception),
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1, min=1, max=10),
-            reraise=False,
-        )
-        def _do_call():
-            return self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-
-        return _do_call()
 
     # ── 异步链路（不阻塞事件循环） ──
 
@@ -208,35 +169,4 @@ class OpenAIClient:
         )
         if text:
             tip.message = text
-        return tip
-
-    # ── 润色：同步版 ──
-
-    def polish(self, tip: CoachingTip, state: GameState | None,
-               rag_context: str | None = None) -> CoachingTip:
-        if not self._client:
-            return tip
-
-        # ★ HA #5: 断路器打开 → 直接跳过 LLM
-        if self._breaker.is_open():
-            return tip
-
-        user_prompt, max_tokens = self._build_polish_prompt(tip, state, rag_context)
-
-        try:
-            response = self._call_with_retry(
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_tokens=max_tokens,
-            )
-            if response and response.choices:
-                text = response.choices[0].message.content
-                if text:
-                    tip.message = text.strip()
-                    self._breaker.record_success()
-        except Exception:
-            self._breaker.record_failure()
-
         return tip

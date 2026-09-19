@@ -91,11 +91,14 @@ class ValidationMixin:
                 return {**state, "should_publish": False, "skip_reason": reason}
 
         if redis:
-            # 去重 TTL = SKILL.md 声明的 cooldown
+            # 去重 TTL = SKILL.md 声明的 cooldown；<=0 表示该 skill 主动放弃去重
+            # （如 review 每局至多一次，由 game_end 事件本身保证）
             from planner.planner import SKILL_REGISTRY
             meta = SKILL_REGISTRY.get(state["skill_name"], {})
-            ttl = int(meta.get("cooldown", DEFAULT_TIP_TTL) or DEFAULT_TIP_TTL)
-            await redis.mark_tip_sent(state["session_id"], state["skill_name"], ttl=ttl)
+            raw = meta.get("cooldown")
+            ttl = DEFAULT_TIP_TTL if raw is None else int(raw)
+            if ttl > 0:
+                await redis.mark_tip_sent(state["session_id"], state["skill_name"], ttl=ttl)
 
         state["tip"] = {
             "skill": state["skill_name"],

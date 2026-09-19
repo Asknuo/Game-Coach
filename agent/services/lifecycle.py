@@ -16,18 +16,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def bg_ingest() -> None:
-    """后台刷新知识库（摄入是分钟级耗时操作，不阻塞服务启动）."""
+async def bg_ingest(ctx: AppContext) -> None:
+    """后台刷新知识库（摄入是分钟级耗时操作，不阻塞服务启动）.
+
+    复用主进程的 store/embedder：第二个 Chroma 客户端删建 collection 会让
+    主进程检索句柄悬空，第二个 embedder 会重复加载 embedding 模型。
+    """
     logger.info("Knowledge base stale or missing — refreshing in background...")
     try:
         from knowledge.ingest import Ingestor
-        await asyncio.to_thread(Ingestor().ingest_all)
+        ingestor = Ingestor(store=ctx.retriever.store, embedder=ctx.retriever.embedder)
+        await asyncio.to_thread(ingestor.ingest_all)
         logger.info("Knowledge base refresh finished")
     except Exception:
         logger.exception("Auto-refresh knowledge base failed")
 
 
-def maybe_start_ingest(ctx: "AppContext") -> "asyncio.Task[None] | None":
+def maybe_start_ingest(ctx: AppContext) -> asyncio.Task[None] | None:
     """知识库过期/缺失时启动后台摄入任务，否则返回 None.
 
     首次启动或超过 7 天未摄入 → 后台自动刷新。
@@ -35,10 +40,10 @@ def maybe_start_ingest(ctx: "AppContext") -> "asyncio.Task[None] | None":
     retriever = ctx.retriever
     if not retriever.available or not retriever.store.needs_refresh():
         return None
-    return asyncio.create_task(bg_ingest())
+    return asyncio.create_task(bg_ingest(ctx))
 
 
-async def periodic_save(ctx: "AppContext") -> None:
+async def periodic_save(ctx: AppContext) -> None:
     """HA #1: 每 60 秒自动持久化到磁盘，防止进程崩溃丢数据."""
     while True:
         await asyncio.sleep(60)
@@ -48,7 +53,7 @@ async def periodic_save(ctx: "AppContext") -> None:
             logger.exception("Periodic memory save failed")
 
 
-async def review_on_disconnect(ctx: "AppContext", state: GameState) -> None:
+async def review_on_disconnect(ctx: AppContext, state: GameState) -> None:
     """断连时生成复盘：走完整 LangGraph 流水线，让 review skill 生效.
 
     原实现直接调 summarize_game，绕过流水线导致 review skill 永不触发。
@@ -84,7 +89,7 @@ async def review_on_disconnect(ctx: "AppContext", state: GameState) -> None:
         logger.info("[review] %s", tip["message"][:120])
 
 
-async def summarize_on_disconnect(ctx: "AppContext", state: GameState | None) -> None:
+async def summarize_on_disconnect(ctx: AppContext, state: GameState | None) -> None:
     if not state or state.game_time <= 120:
         return
 

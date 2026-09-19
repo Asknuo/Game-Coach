@@ -4,14 +4,13 @@
 本模块只保留对局摘要与 top_of_mind 维护职责。
 """
 
-import asyncio
 import json
 import logging
 import time
 import uuid
 
-from memory.models import Fact, PlayerMemory, RecentGame
 from memory.injector import MemoryInjector
+from memory.models import Fact, PlayerMemory, RecentGame
 from models.state import CoachEvent, GameState
 
 logger = logging.getLogger(__name__)
@@ -59,7 +58,7 @@ class CoachEngine:
     async def summarize_game(self, session_id: str, state_summary: dict):
         """对局结束后生成摘要，沉淀到 history + facts."""
         llm = self._llm
-        if llm is None or not llm._client:
+        if llm is None or not llm._get_async_client():
             # 无 LLM → 用简单的统计摘要
             self._summarize_fallback(state_summary)
             return

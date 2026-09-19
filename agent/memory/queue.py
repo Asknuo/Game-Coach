@@ -1,7 +1,8 @@
 """防抖队列 — 聚合事件窗口，批量触发 coaching 生成.
 
-紧急事件（low_health, death, dragon_soon <= 30s）应绕过此队列直接处理，
-但本队列也做防御性过滤避免误入。
+紧急事件（low_health / death，以及 ≤30s 的 dragon_soon / baron_soon，
+判定见 services/events.py is_urgent）由会话层直接绕过本队列处理；
+本队列只做防御性过滤（URGENT_EVENTS 无条件项）避免误入。
 
 注意：窗口语义为「固定窗口」— 从窗口内首个事件入队起计时，
 到期后批量消费；窗口期间后续事件只入队、不延长窗口。
@@ -28,9 +29,9 @@ class MemoryQueue:
 
     def __init__(
         self,
-        window: float = 30.0,
-        max_per_window: int = 3,
-        skill_cooldown: float = 30.0,
+        window: float = 15.0,
+        max_per_window: int = 2,
+        skill_cooldown: float = 25.0,
     ):
         self.window = window
         self.max_per_window = max_per_window

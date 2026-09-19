@@ -27,16 +27,22 @@ class GenerationMixin:
     async def llm_polish(self, state: CoachState) -> CoachState:
         """调用 LLM 润色教练建议，注入 SKILL.md 上下文 + 坑点清单."""
         llm = self.deps.llm
-        if not llm or not llm._client:
+        if not llm or not llm._get_async_client():
             return {**state, "polished_message": state["skill_message"]}
 
-        from models.state import CoachingTip
+        from models.state import CoachingTip, GameState
 
         tip = CoachingTip(
             skill=state["skill_name"],
             message=state["skill_message"],
             priority=state["priority"],
         )
+
+        gs = state.get("game_state")
+        try:
+            snapshot = GameState.model_validate(gs) if gs else None
+        except Exception:
+            snapshot = None
 
         # ── 构建增强上下文：SKILL.md + gotchas + RAG + memory ──
         parts = []
@@ -61,7 +67,7 @@ class GenerationMixin:
 
         try:
             # 异步链路：不阻塞 FastAPI 事件循环
-            result = await llm.apolish(tip, None, rag_context=rag_ctx)
+            result = await llm.apolish(tip, snapshot, rag_context=rag_ctx)
             state["polished_message"] = result.message
             logger.debug("llm_polish: %s", state["polished_message"][:80])
         except Exception:

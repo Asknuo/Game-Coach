@@ -7,14 +7,11 @@ logger = logging.getLogger(__name__)
 
 
 class Retriever:
-    """统一检索接口，被 Skills 调用。
+    """统一检索接口，唯一入口是 aggregate_coaching_context（流水线 RAG 节点）。
 
     支持检索：
     - 装备 (items)
-    - 英雄技能 (champions) — 按英雄名 + 技能键过滤
     - 英雄攻略 (guides)
-    - 符文 (runes)
-    - 召唤师技能 (summoner_spells)
     - 游戏通用信息 (game_info) — 按类别过滤
     """
 
@@ -31,55 +28,6 @@ class Retriever:
     def search_items(self, query: str, n: int = 3) -> list[dict]:
         """语义搜索装备。"""
         return self._search(self.store.items, query, n=n)
-
-    # ---- 英雄技能 ----
-
-    def search_champion(
-        self,
-        champion: str,
-        query: str,
-        ability: str | None = None,
-        n: int = 5,
-    ) -> list[dict]:
-        """按英雄名检索技能信息（大小写不敏感）。
-
-        Args:
-            champion: 英雄名 (如 "Aatrox", "ahri")
-            query: 语义查询文本
-            ability: 可选，限制技能键 (Passive/Q/W/E/R)
-            n: 返回数量
-        """
-        # 大小写不敏感匹配
-        for champ_variant in (champion, champion.lower(), champion.capitalize()):
-            where: dict = {"champion": champ_variant}
-            if ability:
-                where["section"] = ability
-            results = self._search(self.store.champions, query, n=n, where=where)
-            if results:
-                return results
-        return self._search(self.store.champions, query, n=n)
-
-    def search_champion_abilities(
-        self,
-        champion: str,
-        n: int = 6,
-    ) -> list[dict]:
-        """获取英雄所有技能（概览 + 被动 + QWER）。"""
-        if not self.available or self.store.champions is None:
-            return []
-        try:
-            results = self.store.champions.get(
-                where={"champion": champion},
-                limit=n,
-            )
-            out = []
-            if results["documents"]:
-                for doc, meta in zip(results["documents"], results["metadatas"]):
-                    out.append({"document": doc, "metadata": meta})
-            return out
-        except Exception:
-            logger.exception("champion abilities fetch failed for %s", champion)
-            return []
 
     # ---- 英雄攻略 ----
 
@@ -123,34 +71,6 @@ class Retriever:
                 deduped.append(r)
         return deduped[:n]
 
-    def search_guide_by_time(
-        self,
-        champion: str,
-        game_time: float,
-        query: str,
-        n: int = 3,
-    ) -> list[dict]:
-        """根据游戏时间自动推断阶段，然后检索攻略。"""
-        if game_time < 14 * 60:
-            phase = "early"
-        elif game_time < 25 * 60:
-            phase = "mid"
-        else:
-            phase = "late"
-        return self.search_guide(champion, query, phase=phase, n=n)
-
-    # ---- 符文 ----
-
-    def search_runes(self, query: str, n: int = 5) -> list[dict]:
-        """语义搜索符文。"""
-        return self._search(self.store.runes, query, n=n)
-
-    # ---- 召唤师技能 ----
-
-    def search_summoner_spells(self, query: str, n: int = 3) -> list[dict]:
-        """语义搜索召唤师技能。"""
-        return self._search(self.store.summoner_spells, query, n=n)
-
     # ---- 游戏通用信息 ----
 
     def search_game_info(
@@ -170,19 +90,6 @@ class Retriever:
         if category:
             where = {"category": category}
         return self._search(self.store.game_info, query, n=n, where=where)
-
-    # ---- 跨集合搜索 ----
-
-    def search_all(self, query: str, n: int = 3) -> dict[str, list[dict]]:
-        """在所有集合中搜索，返回按集合分类的结果。"""
-        return {
-            "items": self.search_items(query, n=n),
-            "champions": self._search(self.store.champions, query, n=n),
-            "guides": self._search(self.store.guides, query, n=n),
-            "runes": self.search_runes(query, n=n),
-            "summoner_spells": self.search_summoner_spells(query, n=n),
-            "game_info": self.search_game_info(query, n=n),
-        }
 
     # ---- 聚合：多源知识整合为用户可读的教练建议 ----
 
