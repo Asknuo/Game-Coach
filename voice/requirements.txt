@@ -1,0 +1,2 @@
+websockets>=13.0
+pywin32>=306        # Windows SAPI 直连（可选；缺失时自动回退 PowerShell）
