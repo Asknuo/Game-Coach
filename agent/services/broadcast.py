@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def broadcast_tip_json(ctx: "AppContext", tip_json: str) -> None:
+async def broadcast_tip_json(ctx: AppContext, tip_json: str) -> None:
     """向所有 overlay 客户端广播 tip，清理已断开的连接."""
     dead: list[WebSocket] = []
     # 快照遍历：循环体内 await 会让出控制权，/ws/overlay 处理器可能并发增删该 set
@@ -31,7 +31,7 @@ async def broadcast_tip_json(ctx: "AppContext", tip_json: str) -> None:
 
 
 async def record_advice_context(
-    ctx: "AppContext",
+    ctx: AppContext,
     tip: dict[str, Any],
     result: dict[str, Any],
     latest_state: GameState | None,
@@ -56,7 +56,7 @@ async def record_advice_context(
     )
 
 
-async def check_advice_feedback(ctx: "AppContext", payload: dict[str, Any]) -> None:
+async def check_advice_feedback(ctx: AppContext, payload: dict[str, Any]) -> None:
     """每帧 state 到达时检查建议反馈.
 
     状态机：followed → 加置信度；not_followed → 降置信度（仅明确违背时）；

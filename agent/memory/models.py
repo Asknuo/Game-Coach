@@ -9,7 +9,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ──────────────────────────────────────────────
 # 第一层: User Context (对局实时状态快照)
 # ──────────────────────────────────────────────

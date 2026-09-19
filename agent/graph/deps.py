@@ -22,9 +22,9 @@ class GraphDeps:
     缺失依赖的节点会自动降级（跳过检索/记忆/去重）。
     """
 
-    planner: "Planner | None" = None
-    llm: "OpenAIClient | None" = None
-    retriever: "Retriever | None" = None
-    injector: "MemoryInjector | None" = None
-    redis_store: "RedisStore | None" = None
-    memory: "PlayerMemory | None" = None
+    planner: Planner | None = None
+    llm: OpenAIClient | None = None
+    retriever: Retriever | None = None
+    injector: MemoryInjector | None = None
+    redis_store: RedisStore | None = None
+    memory: PlayerMemory | None = None

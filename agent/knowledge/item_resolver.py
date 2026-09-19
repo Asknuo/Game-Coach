@@ -11,7 +11,6 @@
 import json
 import logging
 import os
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +266,7 @@ class ItemResolver:
         items_path = os.path.join(data_dir, "items.json")
         if os.path.exists(items_path):
             try:
-                with open(items_path, "r", encoding="utf-8") as f:
+                with open(items_path, encoding="utf-8") as f:
                     raw = json.load(f)
                 # 兼容 dict 和 list 两种格式
                 if isinstance(raw, dict):

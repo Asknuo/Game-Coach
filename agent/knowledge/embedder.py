@@ -2,7 +2,7 @@ import json
 import logging
 import os
 from collections import OrderedDict
-from urllib.request import urlopen, Request
+from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 

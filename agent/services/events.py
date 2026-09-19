@@ -58,7 +58,7 @@ def should_skip_dead_event(state: GameState | None, event: CoachEvent) -> bool:
     return state.active_player_health_pct() == 0
 
 
-def handle_lcu_event(ctx: "AppContext", event: CoachEvent) -> bool:
+def handle_lcu_event(ctx: AppContext, event: CoachEvent) -> bool:
     """处理 LCU 大厅事件：符文/熟练度/选人等写入记忆上下文，供注入 LLM.
 
     返回 True 表示该事件已被消费（不再进入 coaching 流水线）。
@@ -91,7 +91,7 @@ def handle_lcu_event(ctx: "AppContext", event: CoachEvent) -> bool:
     return False
 
 
-def update_memory_from_state(ctx: "AppContext", state: GameState, payload: dict) -> None:
+def update_memory_from_state(ctx: AppContext, state: GameState, payload: dict) -> None:
     """每帧 state 同步玩家画像到记忆（英雄/金币/等级/阶段/KDA/地图区域）."""
     memory = ctx.memory
     ap = state.active_player

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -72,9 +72,9 @@ class GameState(BaseModel):
     active_player: ActivePlayer = Field(default_factory=ActivePlayer)
     all_players: list[Player] = Field(default_factory=list)
     events: list[GameEvent] = Field(default_factory=list)
-    dragon_timer: Optional[DragonInfo] = None
-    baron_timer: Optional[BaronInfo] = None
-    collected_at: Optional[datetime] = None
+    dragon_timer: DragonInfo | None = None
+    baron_timer: BaronInfo | None = None
+    collected_at: datetime | None = None
 
     @field_validator("all_players", "events", mode="before")
     @classmethod

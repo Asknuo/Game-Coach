@@ -7,14 +7,14 @@ import (
 )
 
 type GameState struct {
-	GameTime       float64        `json:"game_time"`
-	ActivePlayer   ActivePlayer   `json:"active_player"`
-	AllPlayers     []Player       `json:"all_players"`
-	Events         []GameEvent    `json:"events"`
-	DragonTimer    *DragonInfo    `json:"dragon_timer,omitempty"`
-	BaronTimer     *BaronInfo     `json:"baron_timer,omitempty"`
-	CollectedAt    time.Time      `json:"collected_at"`
-	RawEventData   json.RawMessage `json:"-"`
+	GameTime     float64         `json:"game_time"`
+	ActivePlayer ActivePlayer    `json:"active_player"`
+	AllPlayers   []Player        `json:"all_players"`
+	Events       []GameEvent     `json:"events"`
+	DragonTimer  *DragonInfo     `json:"dragon_timer,omitempty"`
+	BaronTimer   *BaronInfo      `json:"baron_timer,omitempty"`
+	CollectedAt  time.Time       `json:"collected_at"`
+	RawEventData json.RawMessage `json:"-"`
 }
 
 type ActivePlayer struct {
@@ -63,8 +63,8 @@ type GameEvent struct {
 }
 
 type DragonInfo struct {
-	Type       string  `json:"type"`
-	SpawnTime  float64 `json:"spawn_time"`
+	Type        string  `json:"type"`
+	SpawnTime   float64 `json:"spawn_time"`
 	SecondsLeft float64 `json:"seconds_left"`
 }
 
@@ -84,8 +84,8 @@ func ParseGameState(raw []byte) (*GameState, error) {
 		// Pre-allocate empty slice so JSON marshal produces [] not null.
 		// When allPlayers is missing from the API response (loading screen,
 		// early game), a nil slice would serialize as null, which Pydantic rejects.
-		AllPlayers:   []Player{},
-		Events:       []GameEvent{},
+		AllPlayers: []Player{},
+		Events:     []GameEvent{},
 	}
 
 	parseGameData(root, state)
@@ -115,9 +115,9 @@ func parseActivePlayer(root map[string]json.RawMessage, state *GameState) {
 		return
 	}
 	var ap struct {
-		SummonerName string `json:"summonerName"`
-		Level        int    `json:"level"`
-		CurrentGold  float64 `json:"currentGold"`
+		SummonerName  string  `json:"summonerName"`
+		Level         int     `json:"level"`
+		CurrentGold   float64 `json:"currentGold"`
 		ChampionStats struct {
 			CurrentHealth float64 `json:"currentHealth"`
 			MaxHealth     float64 `json:"maxHealth"`
