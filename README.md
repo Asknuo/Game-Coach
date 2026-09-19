@@ -34,8 +34,8 @@ LOL Client ─┬─ Live Client Data API (127.0.0.1:2999) ─────┐
                                                        │
                                      ┌─────────────────┴─────────────────┐
                                      ▼                                   ▼
-                               Collector 日志                        Overlay 页面
-                                                                  (Web Speech API)
+                               Collector 日志                      语音播报客户端
+                                                                  (Windows TTS)
 ```
 
 ## 设计理念
@@ -194,6 +194,11 @@ Game Coach/
 │   ├── go.mod
 │   └── go.sum
 │
+├── voice/                         # 语音播报客户端（Windows TTS，可选）
+│   ├── voice_broadcast.py         #   连接 /ws/overlay，用系统语音朗读 coaching tip
+│   ├── requirements.txt           #   websockets + pywin32（可选，缺省回退 PowerShell）
+│   └── tests/                     #   pytest — 队列调度 / 优先级过滤 / WS 集成
+│
 ├── docker-compose.yml               # Redis 7 Alpine + Agent 容器编排
 ├── .env.example                     # 环境变量模板（12 个变量）
 └── README.md
@@ -317,14 +322,29 @@ go run .
 
 Collector 会自动检测 LOL lockfile；配置 LCU 后还会上报大厅事件（符文/选人/熟练度）。
 
-### 7. 验证
+### 7. 启动语音播报（可选）
+
+Agent 运行后，后台挂一个语音播报客户端，把每条 coaching tip 用 Windows 语音
+引擎实时朗读出来（无界面，游戏时可常驻）：
+
+```bash
+cd voice
+pip install -r requirements.txt   # pywin32 缺失时自动回退 PowerShell 播报
+python voice_broadcast.py
+```
+
+常用参数：`--min-priority 2` 只播重要建议、`--rate 2` 调整语速、`--voice Huihui`
+指定语音；`--dry-run` 可先打印试听。默认连接 `ws://localhost:8000/ws/overlay`，
+可通过环境变量 `VOICE_WS_URL` 覆盖。
+
+### 8. 验证
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `http://localhost:8000/health` | GET | Agent 健康检查 — 服务状态 + 记忆统计 |
 | `http://localhost:8000/tips/latest` | GET | 最新状态和建议 — 当前英雄/阶段/记忆概况 |
 
-### 8. （可选）Docker 完整部署
+### 9. （可选）Docker 完整部署
 
 ```bash
 # 确保 .env 已配置
@@ -495,7 +515,7 @@ skills/{skill_name}/
 {
   "type": "tip",
   "payload": {
-    "message": "Infernal Dragon in 25s — ward river south of mid, position near blue buff entrance. Contest if your jungler is nearby.",
+    "message": "火龙 25 秒后刷新——在中路南侧河道插眼，站位靠近蓝 buff 入口。若己方打野在附近则争夺。",
     "skill": "dragon",
     "priority": 2
   }
@@ -619,10 +639,10 @@ None → Lobby → Matchmaking → ReadyCheck → ChampSelect → InProgress →
 Collector 连接后，Agent 日志实时输出每条 coaching tip：
 
 ```
-[INFO] [dragon] Infernal Dragon in 25s — ward river south of mid, position near blue buff entrance.
-[INFO] [survival] Low HP (22%) — recall immediately and buy Sorcerer's Shoes.
-[INFO] [build] Item purchased — next go Void Staff, they already stacked MR.
-[INFO] [review] Game ended — CS 187 @ 28min (6.7/min), needs improvement. 3 deaths to ganks.
+[INFO] [dragon] 火龙 25 秒后刷新——在中路南侧河道插眼，站位靠近蓝 buff 入口。
+[INFO] [survival] 血量过低（22% HP）——立即回城，之后补法师之靴。
+[INFO] [build] 已购买装备——下一件出虚空之杖，对面已经堆了魔抗。
+[INFO] [review] 对局结束——28 分钟补刀 187（6.7/分钟），有待提升。3 次死于被抓。
 ```
 
 ### 2. Overlay 广播通道
@@ -630,6 +650,17 @@ Collector 连接后，Agent 日志实时输出每条 coaching tip：
 `/ws/overlay` 是通用广播端点：Agent 发布的每条 tip 都会推送给所有已连接的
 overlay 客户端（如浏览器 Overlay 页面），可用于自定义前端展示或语音播报。
 客户端每 15 秒发送 `{"type":"ping"}` 心跳保活即可保持连接。
+
+### 3. 语音播报（Windows TTS）
+
+`voice/voice_broadcast.py` 是开箱即用的语音播报客户端：订阅 `/ws/overlay`，
+收到 tip 后调用 Windows SAPI 朗读（pywin32 直连，缺失时自动回退 PowerShell），
+无需任何界面。紧急 tip（priority ≥ 3）插队优先播报，断线自动重连并带指数退避。
+
+```bash
+python voice/voice_broadcast.py                  # 默认播报全部 tip
+python voice/voice_broadcast.py --min-priority 2   # 只播重要建议
+```
 
 ---
 
@@ -647,6 +678,7 @@ overlay 客户端（如浏览器 Overlay 页面），可用于自定义前端展
 | `OPENAI_MODEL` | 兼容旧变量（LLM fallback） | `gpt-4o-mini` | - |
 | `REDIS_URL` | Redis 连接字符串 | `redis://localhost:6379/0` | ✅ |
 | `AGENT_WS_URL` | Collector → Agent 的 WebSocket 地址 | `ws://localhost:8000/ws/collector` | - |
+| `VOICE_WS_URL` | 语音播报客户端 → Agent 的广播地址 | `ws://localhost:8000/ws/overlay` | - |
 | `POLL_INTERVAL` | 采集轮询间隔（秒） | `1.0` | - |
 | `PORT` | Agent HTTP/WS 服务端口 | `8000` | - |
 

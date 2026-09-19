@@ -21,91 +21,91 @@ EventMessageBuilder = Callable[[CoachEvent, GameState | None, dict], str]
 
 def _base_low_health(_event: CoachEvent, state: GameState | None, _data: dict) -> str:
     hp = state.active_player_health_pct() if state else None
-    hp_str = f" ({hp:.0f}% HP)" if hp is not None else ""
-    return f"Low HP{hp_str} — check if recall is needed."
+    hp_str = f"（{hp:.0f}% HP）" if hp is not None else ""
+    return f"血量过低{hp_str}——检查是否需要回城。"
 
 
 def _base_dragon_soon(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
     sec = data.get("seconds_left", 30)
-    return f"Dragon spawning in {sec}s — prepare vision and positioning."
+    return f"小龙 {sec:.0f} 秒后刷新——提前布置视野和站位。"
 
 
 def _base_baron_soon(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
     sec = data.get("seconds_left", 30)
-    return f"Baron spawning in {sec}s — set up vision, do NOT start Baron."
+    return f"大龙 {sec:.0f} 秒后刷新——布置视野，不要贸然开龙。"
 
 
 def _base_item_purchased(_event: CoachEvent, _state: GameState | None, _data: dict) -> str:
-    return "Item purchased — consider next item based on enemy composition."
+    return "已购买装备——根据敌方阵容考虑下一件出装。"
 
 
 def _base_item_sold(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
     item_id = data.get("item_id", data.get("new_item_id", "unknown"))
-    return f"Item sold (ID: {item_id}) — inventory space freed."
+    return f"装备已出售（ID: {item_id}）——腾出了装备栏位。"
 
 
 def _base_item_upgraded(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
     old_id = data.get("old_item_id", "unknown")
     new_id = data.get("new_item_id", "unknown")
-    return f"Item upgraded (ID: {old_id} → {new_id}) — power spike incoming."
+    return f"装备已升级（ID: {old_id} → {new_id}）——强势期到来。"
 
 
 def _base_enemy_item_purchased(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
-    enemy_champ = data.get("enemy_champion", "enemy")
+    enemy_champ = data.get("enemy_champion", "敌方")
     item_count = data.get("total_items", 0)
     return (
-        f"Enemy {enemy_champ} bought item(s) (total: {item_count}) "
-        f"— check their build and counter."
+        f"敌方 {enemy_champ} 购买了装备（共 {item_count} 件）"
+        f"——查看其出装并针对性应对。"
     )
 
 
 def _base_enemy_item_sold(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
-    enemy_name = data.get("enemy_name", "enemy")
-    return f"Enemy {enemy_name} sold item(s) — possible item slot swap or build pivot."
+    enemy_name = data.get("enemy_name", "敌方")
+    return f"敌方 {enemy_name} 出售了装备——可能在调整出装路线。"
 
 
 def _base_enemy_gold_lead(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
-    enemy_champ = data.get("enemy_champion", "enemy")
+    enemy_champ = data.get("enemy_champion", "敌方")
     gap = data.get("gold_gap", 0)
     kills = data.get("enemy_kills", 0)
     return (
-        f"Enemy {enemy_champ} has a {gap:.0f}g lead ({kills} kills) "
-        f"— avoid 1v1, play safe and coordinate ganks."
+        f"敌方 {enemy_champ} 领先 {gap:.0f} 经济（{kills} 击杀）"
+        f"——避免单挑，稳住并呼叫打野。"
     )
 
 
 def _base_enemy_fed(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
-    enemy_champ = data.get("enemy_champion", "enemy")
+    enemy_champ = data.get("enemy_champion", "敌方")
     kills = data.get("kills", 0)
     return (
-        f"ENEMY FED: {enemy_champ} reached {kills} kills "
-        f"— high shutdown priority, group to shut them down."
+        f"敌方已起飞：{enemy_champ} 已 {kills} 杀"
+        f"——优先集火终结，抱团围剿。"
     )
 
 
 def _base_gold_spike(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
-    return f"Gold spike ({data.get('delta', 0)}g) — consider your next purchase."
+    return f"经济突增（{data.get('delta', 0):.0f} 金）——考虑下一次购买。"
 
 
 def _base_kill(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
     kills = data.get("total_kills", 1)
-    return f"Kill secured ({kills} total) — capitalize on the numbers advantage."
+    return f"击杀到手（总 {kills} 杀）——利用人数优势扩大战果。"
 
 
 def _base_laning_check(_event: CoachEvent, _state: GameState | None, _data: dict) -> str:
-    return "Laning phase check — wave management and trading advice."
+    return "对线期检查——兵线管理和换血时机建议。"
 
 
 def _base_macro_check(_event: CoachEvent, _state: GameState | None, _data: dict) -> str:
-    return "Macro check — team rotation and objective priority."
+    return "宏观检查——团队轮转和目标优先级。"
 
 
 def _base_teamfight_detected(_event: CoachEvent, _state: GameState | None, _data: dict) -> str:
-    return "Teamfight detected — target priority and positioning."
+    return "检测到团战——目标优先级和站位。"
 
 
 def _base_game_end(_event: CoachEvent, _state: GameState | None, _data: dict) -> str:
-    return "Game ended — generating post-game review."
+    return "对局结束——生成赛后复盘。"
 
 
 EVENT_BASE_MESSAGES: dict[str, EventMessageBuilder] = {

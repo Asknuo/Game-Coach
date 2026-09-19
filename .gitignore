@@ -9,8 +9,11 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 dist/
-build/
+/build/
 *.egg
+# 注意：上面的 /build/ 已锚定到根目录（Python 打包产物），
+# 下面的例外确保 agent/skills/build/（出装教练 skill，业务代码）不被误伤。
+!agent/skills/build/
 
 # ── 虚拟环境 ──
 .venv/

@@ -45,6 +45,10 @@ async def record_advice_context(
         context={
             "health_pct": event_data.get("health_pct", 0) if event_name == "low_health" else 100,
             "item_count": item_count,
+            # 敌方威胁类：记录发出建议时的敌方状态，供后续判定 shut down / 威胁膨胀
+            "enemy_name": event_data.get("enemy_name", ""),
+            "enemy_deaths": event_data.get("deaths", 0),
+            "enemy_kills": event_data.get("kills", 0) or event_data.get("enemy_kills", 0),
         },
     )
 
@@ -52,7 +56,8 @@ async def record_advice_context(
 async def check_advice_feedback(ctx: "AppContext", payload: dict[str, Any]) -> None:
     """每帧 state 到达时检查建议反馈.
 
-    状态机：followed → 加置信度；pending → 下帧继续观察；expired → 降置信度。
+    状态机：followed → 加置信度；not_followed → 降置信度（仅明确违背时）；
+    pending → 下帧继续观察；skipped → 中性跳过（不影响置信度，不误导学习信号）。
     """
     metrics = ctx.metrics
     status, skill, reason = await ctx.redis_store.check_advice_followed("default", payload)
@@ -60,7 +65,9 @@ async def check_advice_feedback(ctx: "AppContext", payload: dict[str, Any]) -> N
         metrics["advice_followed"] += 1
         new_conf = await ctx.redis_store.adjust_skill_confidence("default", skill, True)
         logger.info("Feedback: [%s] advice followed (%s) → conf %.2f", skill, reason, new_conf)
-    elif status == "expired":
+    elif status == "not_followed":
         metrics["advice_expired"] += 1
         new_conf = await ctx.redis_store.adjust_skill_confidence("default", skill, False)
         logger.info("Feedback: [%s] advice not followed (%s) → conf %.2f", skill, reason, new_conf)
+    elif status == "skipped":
+        logger.debug("Feedback: [%s] not measurable (%s) — confidence unchanged", skill, reason)

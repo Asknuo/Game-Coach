@@ -77,7 +77,7 @@ async def test_followed_when_hp_recovered():
 
 @pytest.mark.asyncio
 async def test_expired_after_window():
-    """超过观察窗口未采纳 → expired，记录被消费."""
+    """超过观察窗口未采纳 → skipped（三态语义下 build 不可客观判定时中性跳过）."""
     store = _store()
     await store.record_advice_given(
         "s", skill="build", event_name="item_purchased", context={"item_count": 2},
@@ -90,10 +90,82 @@ async def test_expired_after_window():
     store._client.data["coach:s:last_advice"] = json.dumps(advice)
 
     status, skill, _ = await store.check_advice_followed("s", _state())
-    assert status == "expired"
+    assert status == "skipped"
     assert skill == "build"
     status2, _, _ = await store.check_advice_followed("s", _state())
     assert status2 == "no_advice"
+
+
+def _enemy_state(enemy_name="EnemyMid", kills=3, deaths=0):
+    """构造含指定敌方玩家的 state（用于 enemy_fed / enemy_gold_lead 判定）."""
+    return {
+        "active_player": {"health": 1000.0, "max_health": 1000.0, "items": []},
+        "all_players": [
+            {"summoner_name": enemy_name, "kills": kills, "deaths": deaths},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_enemy_fed_followed_on_shutdown():
+    """enemy_fed 建议发出后目标敌人死亡 → followed（已 shut down）."""
+    store = _store()
+    await store.record_advice_given(
+        "s", skill="survival", event_name="enemy_fed",
+        context={"enemy_name": "EnemyMid", "enemy_deaths": 0, "enemy_kills": 3},
+    )
+    status, skill, reason = await store.check_advice_followed(
+        "s", _enemy_state(kills=3, deaths=1),
+    )
+    assert status == "followed"
+    assert reason == "enemy_shutdown"
+
+
+@pytest.mark.asyncio
+async def test_enemy_fed_not_followed_on_threat_growing():
+    """enemy_fed 建议发出后目标继续拿头 → not_followed（唯一会降置信度的分支）."""
+    store = _store()
+    await store.record_advice_given(
+        "s", skill="survival", event_name="enemy_fed",
+        context={"enemy_name": "EnemyMid", "enemy_deaths": 0, "enemy_kills": 3},
+    )
+    status, skill, reason = await store.check_advice_followed(
+        "s", _enemy_state(kills=5, deaths=0),
+    )
+    assert status == "not_followed"
+    assert reason == "threat_growing"
+
+
+@pytest.mark.asyncio
+async def test_enemy_fed_pending_while_observing():
+    """enemy_fed 目标无变化 → pending（继续观察）."""
+    store = _store()
+    await store.record_advice_given(
+        "s", skill="survival", event_name="enemy_fed",
+        context={"enemy_name": "EnemyMid", "enemy_deaths": 0, "enemy_kills": 3},
+    )
+    status, _, _ = await store.check_advice_followed("s", _enemy_state())
+    assert status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_macro_check_skipped_neutral():
+    """战略类事件（macro_check）不可客观判定 → 超时后 skipped，置信度不受罚."""
+    store = _store()
+    await store.record_advice_given(
+        "s", skill="macro", event_name="macro_check", context={},
+    )
+    raw = store._client.data["coach:s:last_advice"]
+    import json
+    advice = json.loads(raw)
+    advice["ts"] = time.time() - ADVICE_FEEDBACK_WINDOW - 1
+    store._client.data["coach:s:last_advice"] = json.dumps(advice)
+
+    status, skill, _ = await store.check_advice_followed("s", _state())
+    assert status == "skipped"
+    assert skill == "macro"
+    # 关键断言：置信度未被扣减（这是修复"只罚不赏"的核心语义）
+    assert await store.get_skill_confidence("s", "macro") == 1.0
 
 
 @pytest.mark.asyncio

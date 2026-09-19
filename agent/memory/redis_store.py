@@ -101,7 +101,9 @@ class RedisStore:
         """检查上次建议是否被采纳。
 
         返回 (status, skill, reason):
-        - "followed"   → 玩家已采纳（建议记录被消费）
+        - "followed"     → 玩家已采纳（建议记录被消费）
+        - "not_followed" → 明确违背建议（仅敌方威胁类事件可判定，会降置信度）
+        - "skipped"      → 事件类型无法客观判定，观察窗口到期后中性跳过（不影响置信度）
         - "pending"    → 仍在观察窗口内，下帧继续检查（记录保留）
         - "expired"    → 超过观察窗口未采纳（建议记录被消费）
         - "no_advice"  → 没有待检查的建议
@@ -109,7 +111,7 @@ class RedisStore:
         """
         key = self._key(session_id, "last_advice")
         advice = None
-        via_redis = True
+        via_redis = False
         try:
             raw = await self.client.get(key)
             if raw:
@@ -127,18 +129,21 @@ class RedisStore:
         event = advice.get("event", "")
         context = advice.get("context", {})
         age = time.time() - advice.get("ts", 0)
-        active = current_state.get("active_player", {})
 
-        followed, reason = self._judge_followed(event, context, active)
-        if followed:
+        followed, reason = self._judge_followed(event, context, current_state)
+        if followed is True:
             await self._consume_advice(key, via_redis)
             return "followed", skill, reason
+        if followed is False:
+            await self._consume_advice(key, via_redis)
+            return "not_followed", skill, reason
 
+        # followed is None → 该事件类型无法客观判定，仅观察窗口，超时中性跳过
         if age >= ADVICE_FEEDBACK_WINDOW:
             await self._consume_advice(key, via_redis)
-            return "expired", skill, f"not_followed_in_{ADVICE_FEEDBACK_WINDOW:.0f}s"
+            return "skipped", skill, f"not_measurable_{event}"
 
-        return "pending", skill, "observing"
+        return "pending", skill, reason or "observing"
 
     async def _consume_advice(self, key: str, via_redis: bool) -> None:
         if via_redis:
@@ -150,8 +155,17 @@ class RedisStore:
         self._memory.pop("last_advice", None)
 
     @staticmethod
-    def _judge_followed(event: str, context: dict, active: dict) -> tuple[bool, str]:
-        """按建议类型判断玩家是否采纳."""
+    def _judge_followed(event: str, context: dict, state: dict) -> tuple[bool | None, str]:
+        """按建议类型判断玩家是否采纳（三态）。
+
+        返回:
+            (True, reason)  → 已采纳（HP 恢复 / 装备增加 / 敌方被击杀 / 已回城）
+            (False, reason) → 明确违背（仅敌方威胁类：威胁继续膨胀）
+            (None, reason)  → 无法客观判定（laning/macro/目标站位等战略建议），
+                              不应惩罚置信度
+        """
+        active = state.get("active_player", {}) if state else {}
+
         # low_health / death: HP 明显恢复 → 已回城/回复
         if event in ("low_health", "death"):
             prev_hp = context.get("health_pct", 0)
@@ -160,9 +174,10 @@ class RedisStore:
             cur_hp_pct = hp / mx * 100 if mx > 0 else 100
             if cur_hp_pct > prev_hp + 30:
                 return True, f"hp_recovered_{prev_hp:.0f}to{cur_hp_pct:.0f}"
+            return None, "observing"
 
-        # item: 装备数量增加
-        if event in ("item_purchased", "item_upgraded"):
+        # item / gold_spike: 装备数量增加（ gold_spike 的建议就是"去消费"，买装备即采纳）
+        if event in ("item_purchased", "item_upgraded", "gold_spike"):
             items = [
                 it for it in active.get("items", [])
                 if (it.get("item_id") or it.get("itemID", 0)) != 0
@@ -170,8 +185,41 @@ class RedisStore:
             prev_count = context.get("item_count", 0)
             if len(items) > prev_count:
                 return True, f"item_added_{prev_count}to{len(items)}"
+            return None, "observing"
 
-        return False, "not_detected"
+        # 敌方威胁类：目标敌人死亡 → 已 shut down（采纳）；威胁继续膨胀 → 明确未采纳
+        if event in ("enemy_fed", "enemy_gold_lead"):
+            enemy_name = context.get("enemy_name", "")
+            if enemy_name:
+                for p in state.get("all_players", []):
+                    if p.get("summoner_name") != enemy_name:
+                        continue
+                    if p.get("deaths", 0) > context.get("enemy_deaths", 0):
+                        return True, "enemy_shutdown"
+                    if p.get("kills", 0) > context.get("enemy_kills", 0):
+                        return False, "threat_growing"
+                return None, "observing"
+
+        # 目标预警：计时器消失（目标已被处理/出生）→ 玩家已进入目标环节
+        if event in ("dragon_soon", "baron_soon"):
+            key = "dragon_timer" if event == "dragon_soon" else "baron_timer"
+            if not state.get(key):
+                return True, "objective_resolved"
+            return None, "observing"
+
+        # item_sold: 建议"腾出装位后买入下一件" → 买回装备即采纳
+        if event == "item_sold":
+            items = [
+                it for it in active.get("items", [])
+                if (it.get("item_id") or it.get("itemID", 0)) != 0
+            ]
+            if len(items) >= context.get("item_count", 99):
+                return True, "slot_refilled"
+            return None, "observing"
+
+        # 其余事件（laning/macro/teamfight/kill/game_end 等）：
+        # 战略建议无法从单帧状态客观判定，保持观察，超时后中性跳过
+        return None, "not_measurable"
 
     # ── Skill 置信度（反馈闭环的输出，validate 节点消费） ──
 
