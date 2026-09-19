@@ -41,6 +41,7 @@ type Detector struct {
 
 	// -- teamfight detection --
 	recentKillTimes []float64 // ChampionKill event times in the current window
+	lastKillEventID int       // watermark: state.Events is full game history, consume each event once
 
 	initialized bool // first tick after reset: record snapshots, skip events
 }
@@ -149,5 +150,6 @@ func (d *Detector) reset() {
 	d.enemyGoldWarned = nil
 	d.enemyFedMilestones = nil
 	d.recentKillTimes = nil
+	d.lastKillEventID = 0
 	d.initialized = false
 }

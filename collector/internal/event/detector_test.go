@@ -228,6 +228,24 @@ func TestDetect_TeamfightRequiresThreeKills(t *testing.T) {
 	}
 }
 
+func TestDetect_TeamfightNoDoubleCount(t *testing.T) {
+	// state.Events 是全量历史：同两条击杀跨多个 tick 重复出现时，
+	// 无 EventID 水位会被重复计数凑满 3 杀而误报团战
+	d := NewDetector()
+	st := mkState(600)
+	st.Events = []lol.GameEvent{
+		{EventID: 1, EventName: "ChampionKill", EventTime: 598},
+		{EventID: 2, EventName: "ChampionKill", EventTime: 599},
+	}
+	for _, t2 := range []float64{600, 601, 602} {
+		s := mkState(t2)
+		s.Events = st.Events
+		if hasEvent(d.Detect(s), "teamfight_detected") {
+			t.Fatalf("2 real kills must not trigger teamfight at t=%v", t2)
+		}
+	}
+}
+
 func TestDetect_TeamfightPrunesOutsideWindow(t *testing.T) {
 	d := &Detector{recentKillTimes: []float64{100, 110, 120}}
 	st := mkState(130)

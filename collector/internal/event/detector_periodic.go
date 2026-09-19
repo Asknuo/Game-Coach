@@ -49,11 +49,16 @@ func (d *Detector) detectTeamfight(state *lol.GameState) []Event {
 	}
 	d.recentKillTimes = kept
 
-	// Collect new ChampionKill events from this tick.
+	// Collect new ChampionKill events only (state.Events is the full game
+	// history — without the watermark the same kill is re-counted each tick).
 	for _, ev := range state.Events {
+		if ev.EventID <= d.lastKillEventID {
+			continue
+		}
 		if ev.EventName == "ChampionKill" {
 			d.recentKillTimes = append(d.recentKillTimes, ev.EventTime)
 		}
+		d.lastKillEventID = ev.EventID
 	}
 
 	// 3+ kills in 15s window → teamfight.

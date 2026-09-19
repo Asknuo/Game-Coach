@@ -27,7 +27,6 @@ var cooldownDurations = map[string]time.Duration{
 	"item_purchased":       30 * time.Second,
 	"item_sold":            30 * time.Second,
 	"item_upgraded":        30 * time.Second,
-	"kill":                 30 * time.Second,
 	"gold_spike":           60 * time.Second,
 	"enemy_item_purchased": 30 * time.Second,
 	"enemy_item_sold":      30 * time.Second,
@@ -37,7 +36,21 @@ var cooldownDurations = map[string]time.Duration{
 	"macro_check":          300 * time.Second,
 	"teamfight_detected":   90 * time.Second,
 	"game_end":             0, // no cooldown — one-shot event
-	// death: no cooldown — each death event is a distinct occurrence
+	// kill / death: no cooldown — detector 基线已保证每杀/每死只报一次，
+	// 引擎层再加冷却会吞掉双杀等连续事件
+}
+
+// subjectDataKeys 列出事件 Data 中标识"事件主体"的字段。
+// 冷却键按 name+subject 区分，否则敌方 A 的买装会在冷却窗口内吞掉敌方 B 的买装。
+var subjectDataKeys = []string{"enemy_name"}
+
+func cooldownKey(ev Event) string {
+	for _, k := range subjectDataKeys {
+		if v, ok := ev.Data[k].(string); ok && v != "" {
+			return ev.Name + "|" + v
+		}
+	}
+	return ev.Name
 }
 
 // Process runs the detector and applies cross-tick cooldown deduplication.
@@ -54,13 +67,14 @@ func (e *Engine) Process(state *lol.GameState) []Event {
 	// Pass 1: collect events that pass cross-tick cooldown
 	var out []Event
 	for _, ev := range raw {
+		key := cooldownKey(ev)
 		cd, ok := cooldownDurations[ev.Name]
 		if !ok {
 			// No cooldown configured → allow through always
 			out = append(out, ev)
 			continue
 		}
-		if last, exists := e.cooldown[ev.Name]; exists && now.Sub(last) < cd {
+		if last, exists := e.cooldown[key]; exists && now.Sub(last) < cd {
 			continue
 		}
 		out = append(out, ev)
@@ -70,7 +84,7 @@ func (e *Engine) Process(state *lol.GameState) []Event {
 	// events in the same batch don't block each other)
 	for _, ev := range out {
 		if _, hasCD := cooldownDurations[ev.Name]; hasCD {
-			e.cooldown[ev.Name] = now
+			e.cooldown[cooldownKey(ev)] = now
 		}
 	}
 

@@ -89,3 +89,33 @@ func TestObjectiveTracker_GameStartResets(t *testing.T) {
 		t.Fatal("expected default baron timer at 20:00")
 	}
 }
+
+// EventIDs restart at 1 in a new game — a lower ID than the watermark must
+// reset the tracker, otherwise the previous game's timers leak into the new one.
+func TestObjectiveTracker_NewGameIDRewindResets(t *testing.T) {
+	tracker := NewObjectiveTracker()
+	s1 := &GameState{GameTime: 600, Events: []GameEvent{
+		{EventID: 50, EventName: "DragonKill", EventTime: 600, DragonType: "Infernal"},
+	}}
+	tracker.Enrich(s1)
+
+	s2 := &GameState{GameTime: 10, Events: []GameEvent{{EventID: 1, EventName: "GameStart"}}}
+	tracker.Enrich(s2)
+	if s2.DragonTimer != nil {
+		t.Fatalf("new game must not inherit previous dragon timer, got %+v", s2.DragonTimer)
+	}
+
+	// 首龙默认 5:00；若上局 Infernal 记录泄漏，Type 会是 Infernal 而非 unknown
+	s3 := &GameState{GameTime: 295}
+	tracker.Enrich(s3)
+	if s3.DragonTimer == nil {
+		t.Fatal("expected default first-dragon timer at 295s")
+	}
+	if s3.DragonTimer.Type != "unknown" {
+		t.Errorf("dragon type = %s, want unknown (previous game leaked)", s3.DragonTimer.Type)
+	}
+}
+
+func TestObjectiveTracker_NilStateNoPanic(t *testing.T) {
+	NewObjectiveTracker().Enrich(nil)
+}

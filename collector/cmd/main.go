@@ -133,6 +133,9 @@ func (l *collectLoop) fetchState(ctx context.Context) (*lol.GameState, bool) {
 		if err == lol.ErrNotInGame || lol.IsNotInGame(err) {
 			if !l.notInGameLogged {
 				l.notInGameLogged = true
+				// 局间空窗必须清 detector 状态：否则上局 dragonWarned/baronWarned
+				// 锁存与敌方基线残留到下一局（此分支不会进 Detect，无自愈机会）
+				l.engine.Reset()
 				log.Println("game data: waiting for game to start...")
 			}
 			return nil, false

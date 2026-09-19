@@ -3,11 +3,11 @@ package lol
 import "strings"
 
 const (
-	firstDragonSpawn       = 300.0 // 5:00
-	elementalDragonRespawn = 300.0 // 5 min after kill
-	elderDragonRespawn     = 360.0 // 6 min after elder kill
+	firstDragonSpawn       = 300.0  // 5:00
+	elementalDragonRespawn = 300.0  // 5 min after kill
+	elderDragonRespawn     = 360.0  // 6 min after elder kill
 	firstBaronSpawn        = 1200.0 // 20:00
-	baronRespawn           = 360.0 // 6 min after kill
+	baronRespawn           = 360.0  // 6 min after kill
 	objectiveWarnWindow    = 60.0
 )
 
@@ -36,14 +36,13 @@ func (t *ObjectiveTracker) Reset() {
 
 // Enrich fills DragonTimer and BaronTimer on state from tracked kill events.
 func (t *ObjectiveTracker) Enrich(state *GameState) {
-	// Reset timers to avoid stale values from previous state reuse.
-	state.DragonTimer = nil
-	state.BaronTimer = nil
-
 	if state == nil || state.GameTime <= 0 {
 		t.Reset()
 		return
 	}
+	// Reset timers to avoid stale values from previous state reuse.
+	state.DragonTimer = nil
+	state.BaronTimer = nil
 
 	t.syncEvents(state.Events)
 	t.applyDefaultSpawns(state.GameTime)
@@ -72,13 +71,16 @@ func (t *ObjectiveTracker) Enrich(state *GameState) {
 
 func (t *ObjectiveTracker) syncEvents(events []GameEvent) {
 	for _, ev := range events {
+		// 新一局的 EventID 从 1 重新编号：看到比水位小的 ID
+		// 即为跨局信号，必须先重置再消费，否则上局计时器泄漏到新一局。
+		if ev.EventID < t.lastEventID {
+			t.Reset()
+		}
 		if ev.EventID <= t.lastEventID {
 			continue
 		}
 		t.applyEvent(ev)
-		if ev.EventID > t.lastEventID {
-			t.lastEventID = ev.EventID
-		}
+		t.lastEventID = ev.EventID
 	}
 }
 
