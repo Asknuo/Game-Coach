@@ -1,6 +1,7 @@
 package lcu
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -128,7 +129,11 @@ func (c *Client) tryProcess() bool {
 // PEB via NtQueryInformationProcess, which doesn't need admin.
 func (c *Client) tryPythonPsutil() bool {
 	script := filepath.Join("scripts", "lcu_cred.py")
-	out, err := exec.Command("python", script).Output()
+	// A stubbed/blocked "python" on PATH (e.g. WindowsApps alias) must not
+	// hang the connect path — cap it at 5s.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "python", script).Output()
 	if err != nil {
 		return false
 	}

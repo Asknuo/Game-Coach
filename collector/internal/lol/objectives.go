@@ -5,7 +5,6 @@ import "strings"
 const (
 	firstDragonSpawn       = 300.0  // 5:00
 	elementalDragonRespawn = 300.0  // 5 min after kill
-	elderDragonRespawn     = 360.0  // 6 min after elder kill
 	firstBaronSpawn        = 1200.0 // 20:00
 	baronRespawn           = 360.0  // 6 min after kill
 	objectiveWarnWindow    = 60.0
@@ -89,15 +88,17 @@ func (t *ObjectiveTracker) applyEvent(ev GameEvent) {
 	case "GameStart":
 		t.Reset()
 	case "DragonKill":
-		respawn := elementalDragonRespawn
 		if strings.EqualFold(ev.DragonType, "Elder") {
-			respawn = elderDragonRespawn
+			// Elder is the only objective that never respawns.
+			t.dragonScheduled = false
+			t.nextDragonSpawn = 0
+			t.nextDragonType = ""
+			return
 		}
-		t.nextDragonSpawn = ev.EventTime + respawn
-		t.nextDragonType = ev.DragonType
-		if t.nextDragonType == "" {
-			t.nextDragonType = "unknown"
-		}
+		t.nextDragonSpawn = ev.EventTime + elementalDragonRespawn
+		// Live Client API exposes only the killed dragon's type, not the next
+		// one's — reporting the killed type would be fake data.
+		t.nextDragonType = "unknown"
 		t.dragonScheduled = true
 	case "BaronKill":
 		t.nextBaronSpawn = ev.EventTime + baronRespawn

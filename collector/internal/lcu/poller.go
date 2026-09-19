@@ -6,7 +6,10 @@ import (
 	"time"
 )
 
-const pollInterval = 2 * time.Second
+const (
+	pollInterval    = 2 * time.Second
+	reconnectPeriod = 30 * time.Second
+)
 
 // Callback is invoked with LCU events (name + data).
 type Callback func(name string, data map[string]interface{})
@@ -20,6 +23,7 @@ type Poller struct {
 	lastPhase       string
 	lastCSPhase     string
 	myPickDone      bool
+	lastReconnect   time.Time
 	latestSummoner  *SummonerInfo
 	latestRunes     *RunePage
 	latestMasteries []ChampionMastery
@@ -33,9 +37,8 @@ func NewPoller(client *Client, cb Callback) *Poller {
 }
 
 // Run starts the LCU polling loop. Blocks until ctx is done.
-// Tries LCU connect once; if it fails, gives up (no retry loop).
+// If the initial connect fails, keeps retrying (throttled by reconnectPeriod).
 func (p *Poller) Run(ctx context.Context) {
-	// Try once.
 	if p.client.TryConnect() {
 		summoner, err := p.client.Get("/lol-summoner/v1/current-summoner")
 		if err == nil && summoner != nil {
@@ -50,8 +53,8 @@ func (p *Poller) Run(ctx context.Context) {
 			p.fetchSummoner()
 		}
 	} else {
-		log.Println("[LCU] unavailable — League Client not detected, LCU will be skipped")
-		return
+		log.Println("[LCU] unavailable — League Client not detected, retrying every 30s")
+		p.lastReconnect = time.Now()
 	}
 
 	for {
@@ -73,6 +76,11 @@ func (p *Poller) Run(ctx context.Context) {
 }
 
 func (p *Poller) poll(ctx context.Context) {
+	if !p.client.Connected() {
+		p.tryReconnect()
+		return
+	}
+
 	// 1. Summoner info.
 	p.fetchSummoner()
 
@@ -85,6 +93,27 @@ func (p *Poller) poll(ctx context.Context) {
 	} else {
 		p.myPickDone = false
 	}
+}
+
+// tryReconnect retries the LCU connection at most once per reconnectPeriod.
+// The client flips to disconnected on any transport error, so without this
+// one network blip would silently kill LCU data for the rest of the session.
+func (p *Poller) tryReconnect() {
+	if time.Since(p.lastReconnect) < reconnectPeriod {
+		return
+	}
+	p.lastReconnect = time.Now()
+	if !p.client.TryConnect() {
+		return
+	}
+	log.Println("[LCU] reconnected")
+	// Stale phase trackers would emit a bogus phase change on the first poll.
+	p.lastPhase = ""
+	p.lastCSPhase = ""
+	p.myPickDone = false
+	p.fetchSummoner()
+	p.fetchRunes()
+	p.fetchMasteries()
 }
 
 func (p *Poller) fetchSummoner() {

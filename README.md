@@ -504,10 +504,13 @@ skills/{skill_name}/
   "type": "event",
   "payload": {
     "name": "dragon_soon",
-    "data": {"dragon_type": "Infernal", "seconds_left": 25}
+    "data": {"seconds_left": 25, "game_time": 875}
   }
 }
 ```
+
+> 注：Live Client API 只提供**被杀龙**的元素类型，下一条龙的元素无法获知，
+> 因此 `dragon_timer.type` 在首条被杀后固定为 `"unknown"`（宁缺毋假）；远古龙被杀后不再刷新计时器。
 
 **Agent → Collector / Overlay**
 
@@ -515,7 +518,7 @@ skills/{skill_name}/
 {
   "type": "tip",
   "payload": {
-    "message": "火龙 25 秒后刷新——在中路南侧河道插眼，站位靠近蓝 buff 入口。若己方打野在附近则争夺。",
+    "message": "小龙 25 秒后刷新——在中路南侧河道插眼，站位靠近蓝 buff 入口。若己方打野在附近则争夺。",
     "skill": "dragon",
     "priority": 2
   }

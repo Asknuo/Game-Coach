@@ -29,25 +29,27 @@ func TestObjectiveTracker_DragonRespawnAfterKill(t *testing.T) {
 	if state.DragonTimer == nil {
 		t.Fatal("expected dragon timer at ~25s left")
 	}
-	if state.DragonTimer.Type != "Infernal" || state.DragonTimer.SecondsLeft > 26 || state.DragonTimer.SecondsLeft < 24 {
+	// 下一条龙的元素 Live Client 不提供——只能报 unknown，不能被被杀龙的类型污染
+	if state.DragonTimer.Type != "unknown" || state.DragonTimer.SecondsLeft > 26 || state.DragonTimer.SecondsLeft < 24 {
 		t.Errorf("timer = %+v", state.DragonTimer)
 	}
 }
 
-func TestObjectiveTracker_ElderDragonRespawn(t *testing.T) {
+func TestObjectiveTracker_ElderDragonNoRespawn(t *testing.T) {
 	tracker := NewObjectiveTracker()
 	state := &GameState{
 		GameTime: 1500,
 		Events:   []GameEvent{{EventID: 1, EventName: "DragonKill", EventTime: 1500, DragonType: "Elder"}},
 	}
 	tracker.Enrich(state)
+	if state.DragonTimer != nil {
+		t.Fatalf("elder kill must clear dragon timer, got %+v", state.DragonTimer)
+	}
+	// 即使过了旧的 6min"复活"时间点，也不应再出现龙计时器
 	state = &GameState{GameTime: 1805}
 	tracker.Enrich(state)
-	if state.DragonTimer == nil {
-		t.Fatal("expected elder dragon timer")
-	}
-	if state.DragonTimer.SecondsLeft > 56 || state.DragonTimer.SecondsLeft < 54 {
-		t.Errorf("seconds_left = %v, want ~55 (elder respawn 6min)", state.DragonTimer.SecondsLeft)
+	if state.DragonTimer != nil {
+		t.Fatalf("elder never respawns, got %+v", state.DragonTimer)
 	}
 }
 
