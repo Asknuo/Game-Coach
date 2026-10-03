@@ -664,7 +664,8 @@ overlay 客户端（如浏览器 Overlay 页面），可用于自定义前端展
 
 `voice/voice_broadcast.py` 是开箱即用的语音播报客户端：订阅 `/ws/overlay`，
 收到 tip 后调用 Windows SAPI 朗读（pywin32 直连，缺失时自动回退 PowerShell），
-无需任何界面。紧急 tip（priority ≥ 3）插队优先播报，断线自动重连并带指数退避。
+无需任何界面。紧急 tip（priority ≥ 3）插队并打断当前普通播报（详见
+[VOICE_OPTIMIZATION.md](VOICE_OPTIMIZATION.md)），断线自动重连并带指数退避。
 
 ```bash
 python voice/voice_broadcast.py                  # 默认播报全部 tip

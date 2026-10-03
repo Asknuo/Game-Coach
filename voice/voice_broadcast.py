@@ -45,32 +45,60 @@ except ImportError:
 
 
 class TipQueue:
-    """线程安全播报队列：紧急 tip 插队到队首，满员时按到达时间丢弃最旧的."""
+    """线程安全播报队列.
+
+    - 紧急 tip 插队到队首"紧急块"的尾部（紧急之间保持到达顺序，
+      避免连续团战 tip 后到先播的碎片化乱序）
+    - 满员时按到达时间丢弃最旧的，put() 返回被丢弃的文本列表供调用方计数
+    """
 
     def __init__(self, maxsize: int = QUEUE_MAX):
-        self._items: collections.deque[tuple[int, str]] = collections.deque()
+        self._items: collections.deque[tuple[int, str, bool]] = collections.deque()
         self._maxsize = maxsize
         self._seq = 0
         self._cond = threading.Condition()
 
-    def put(self, text: str, urgent: bool) -> None:
+    def put(self, text: str, urgent: bool) -> list[str]:
+        """入队；返回因满员被丢弃的最旧文本（可能为空）."""
         with self._cond:
-            item = (self._seq, text)
+            item = (self._seq, text, urgent)
             self._seq += 1
             if urgent:
-                self._items.appendleft(item)
+                idx = 0
+                while idx < len(self._items):
+                    if not self._items[idx][2]:  # 跳过队首连续的紧急块
+                        break
+                    idx += 1
+                self._items.insert(idx, item)
             else:
                 self._items.append(item)
+            dropped: list[str] = []
             while len(self._items) > self._maxsize:
                 oldest = min(self._items, key=lambda it: it[0])
                 self._items.remove(oldest)
+                dropped.append(oldest[1])
+            if dropped:
+                logger.warning("播报队列满（%d），丢弃 %d 条最旧 tip", len(self._items), len(dropped))
             self._cond.notify()
+            return dropped
 
     def get(self) -> str:
+        return self.get_item()[0]
+
+    def get_item(self) -> tuple[str, bool]:
         with self._cond:
             while not self._items:
                 self._cond.wait()
-            return self._items.popleft()[1]
+            _, text, urgent = self._items.popleft()
+            return text, urgent
+
+    def close(self) -> None:
+        """清空积压并放入退出哨兵（退出即弃播，不再消化队列）."""
+        with self._cond:
+            self._items.clear()
+            self._items.append((self._seq, "__EXIT__", False))
+            self._seq += 1
+            self._cond.notify()
 
 
 class PrintSpeaker:
@@ -80,28 +108,46 @@ class PrintSpeaker:
         self.rate = rate
         self.voice = voice
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, interrupt_event: threading.Event | None = None) -> bool:
         print(f"[TTS] {text}", flush=True)
+        return True
 
 
 class SapiSpeaker:
-    """Windows SAPI 语音引擎：pywin32 优先，缺失时回退 PowerShell."""
+    """Windows SAPI 语音引擎：pywin32 优先，缺失时回退 PowerShell.
+
+    speak() 返回 True 表示完整播出；False 表示被 interrupt_event 打断
+    （紧急 tip 插队时当前非紧急播报让路）。COM 对象惰性创建在 TTS
+    线程内并 CoInitialize —— 跨线程调用 STA 对象会失败。
+    """
+
+    POLL_INTERVAL = 0.05  # 打断轮询间隔（秒）
 
     def __init__(self, rate: int = 0, voice: str | None = None) -> None:
         self.rate = max(-10, min(10, rate))
         self.voice = voice
         self._sapi = None
+        self._sapi_failed = False
         if not _HAS_PYWIN32:
             logger.warning("pywin32 未安装，将使用 PowerShell 回退播报")
-            return
+
+    def _ensure_sapi(self):
+        """在调用线程（TTS 线程）内惰性初始化 SAPI."""
+        if self._sapi is not None or self._sapi_failed or not _HAS_PYWIN32:
+            return self._sapi
         try:
+            import pythoncom
+
+            pythoncom.CoInitialize()
             self._sapi = win32com.client.Dispatch("SAPI.SpVoice")
             self._sapi.Rate = self.rate
             self._select_voice()
             logger.info("SAPI 就绪（%s）", self._current_voice())
         except Exception as exc:  # noqa: BLE001 - COM 异常不可控
+            self._sapi_failed = True
             logger.warning("SAPI 初始化失败（%s），将使用 PowerShell 回退播报", exc)
             self._sapi = None
+        return self._sapi
 
     def _current_voice(self) -> str:
         try:
@@ -124,16 +170,32 @@ class SapiSpeaker:
         except Exception:  # noqa: BLE001
             logger.exception("语音选择失败，使用默认语音")
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, interrupt_event: threading.Event | None = None) -> bool:
         if not text:
-            return
-        if self._sapi is not None:
+            return False
+        sapi = self._ensure_sapi()
+        if sapi is not None:
             try:
-                self._sapi.Speak(text)
-                return
+                return self._speak_sapi(sapi, text, interrupt_event)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("SAPI 播报失败（%s），回退 PowerShell", exc)
         self._speak_powershell(text)
+        return True
+
+    def _speak_sapi(self, sapi, text: str, interrupt_event: threading.Event | None) -> bool:
+        """SVSFlagsAsync(1) 异步发起 + 轮询等待；打断时 Skip 掉剩余句子."""
+        sapi.Speak(text, 1)
+        while True:
+            if interrupt_event is not None and interrupt_event.is_set():
+                try:
+                    sapi.Skip("Sentence", 1_000_000)
+                except Exception:  # noqa: BLE001 - Skip 失败只能等它自然播完
+                    return True
+                return False
+            # SPRS_DONE == 1：空闲（不再播报）
+            if sapi.Status.RunningState == 1:
+                return True
+            time.sleep(self.POLL_INTERVAL)
 
     @staticmethod
     def _speak_powershell(text: str) -> None:
@@ -172,7 +234,17 @@ class VoiceBroadcaster:
         self._queue: TipQueue = TipQueue()
         self._last_spoken: dict[str, float] = {}
         self._stop = threading.Event()
-        self._metrics = {"received": 0, "spoken": 0, "skipped_priority": 0, "skipped_dedup": 0}
+        # 紧急 tip 入队时置位 → TTS 线程打断当前非紧急播报
+        self._interrupt = threading.Event()
+        self._metrics = {
+            "received": 0,
+            "queued": 0,
+            "spoken": 0,          # 完整播出
+            "interrupted": 0,    # 被紧急 tip 打断让路
+            "skipped_overflow": 0,  # 队列满员被丢弃
+            "skipped_priority": 0,
+            "skipped_dedup": 0,
+        }
         self._tts_thread = threading.Thread(target=self._tts_loop, daemon=True, name="tts")
 
     # ── 对外接口 ──
@@ -182,7 +254,7 @@ class VoiceBroadcaster:
 
     def stop(self) -> None:
         self._stop.set()
-        self._queue.put("__EXIT__", False)
+        self._queue.close()
 
     def metrics(self) -> dict[str, int]:
         return dict(self._metrics)
@@ -210,9 +282,15 @@ class VoiceBroadcaster:
             return
         self._last_spoken[skill] = now
 
-        self._queue.put(message, urgent=priority >= URGENT_PRIORITY)
-        self._metrics["spoken"] += 1
-        logger.info("[%s] 播报：%s", skill or "tip", message)
+        urgent = priority >= URGENT_PRIORITY
+        dropped = self._queue.put(message, urgent=urgent)
+        self._metrics["queued"] += 1
+        if dropped:
+            self._metrics["skipped_overflow"] += len(dropped)
+        if urgent:
+            # 唤醒 TTS 线程：Skip 当前非紧急播报，插队播这条
+            self._interrupt.set()
+        logger.info("[%s] 入队（%s）：%s", skill or "tip", "紧急" if urgent else "普通", message)
 
     # ── 异步连接 ──
 
@@ -234,7 +312,7 @@ class VoiceBroadcaster:
                 if self._stop.wait(backoff):
                     break
                 backoff = min(backoff * 2, RECONNECT_MAX)
-        self._queue.put("__EXIT__", False)
+        self._queue.close()
 
     async def _listen(self, ws) -> None:
         """接收 tip 消息 + 定期应用层心跳."""
@@ -263,11 +341,19 @@ class VoiceBroadcaster:
 
     def _tts_loop(self) -> None:
         while True:
-            item = self._queue.get()
-            if item == "__EXIT__":
+            text, urgent = self._queue.get_item()
+            if text == "__EXIT__":
                 return
+            # 清掉上一轮打断遗留的置位；紧急条目播报期间不允许被打断
+            #（半截碎片比多等几秒更糟），只打断非紧急播报
+            self._interrupt.clear()
             try:
-                self.speaker.speak(item)
+                completed = self.speaker.speak(
+                    text, interrupt_event=None if urgent else self._interrupt)
+                if completed:
+                    self._metrics["spoken"] += 1
+                else:
+                    self._metrics["interrupted"] += 1
             except Exception:  # noqa: BLE001 - 播报失败不致命
                 logger.exception("播报失败")
 
@@ -307,8 +393,11 @@ def main() -> None:
         logger.info("已停止")
     finally:
         stats = broadcaster.metrics()
-        logger.info("本次统计：接收 %d / 播报 %d / 低优先级跳过 %d / 去重跳过 %d",
-                    stats["received"], stats["spoken"], stats["skipped_priority"], stats["skipped_dedup"])
+        logger.info(
+            "本次统计：接收 %d / 入队 %d / 完整播报 %d / 被紧急打断 %d / "
+            "溢出丢弃 %d / 低优先级跳过 %d / 去重跳过 %d",
+            stats["received"], stats["queued"], stats["spoken"], stats["interrupted"],
+            stats["skipped_overflow"], stats["skipped_priority"], stats["skipped_dedup"])
 
 
 if __name__ == "__main__":
