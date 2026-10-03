@@ -227,3 +227,88 @@ class TestRouteSkill:
         out = nodes.route_skill(_coach_state("low_health", game_state="not-a-dict"))
         assert out["skill_name"] == "survival"
         assert "HP" not in out["skill_message"]
+
+
+# ── llm_polish（非流式降级 / 流式增量推送） ─────────────
+
+from types import SimpleNamespace  # noqa: E402
+
+
+class FakeStreamLLM:
+    """流式桩：_get_async_client 真值，apolish_stream 逐块吐给定增量."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def _get_async_client(self):
+        return object()
+
+    async def apolish_stream(self, tip, snapshot, rag_context=None):
+        for c in self._chunks:
+            yield c
+
+
+class TestLLMPolish:
+    @pytest.mark.asyncio
+    async def test_no_llm_falls_back_to_draft(self):
+        """无 LLM 依赖 → 直接用草稿，不炸."""
+        out = await _nodes().llm_polish(_coach_state("low_health"))
+        assert out["polished_message"] == "draft"
+
+    @pytest.mark.asyncio
+    async def test_non_stream_uses_apolish_result(self):
+        """未注入 emitter → 走非流式 apolish，取返回 message（与原行为一致）."""
+
+        class FakePolishLLM:
+            def _get_async_client(self):
+                return object()
+
+            async def apolish(self, tip, snapshot, rag_context=None):
+                return SimpleNamespace(message="润色结果")
+
+        nodes = GraphNodes(GraphDeps(llm=FakePolishLLM()))
+        out = await nodes.llm_polish(_coach_state("low_health"))
+        assert out["polished_message"] == "润色结果"
+
+    @pytest.mark.asyncio
+    async def test_stream_emits_accumulated_text(self):
+        """流式分支：首块即时推送，结束推全文，polished_message 为拼接结果."""
+        emitted: list[str] = []
+
+        async def emitter(tip, text):
+            emitted.append(text)
+
+        nodes = GraphNodes(GraphDeps(
+            llm=FakeStreamLLM(["快撤", "回城补给", "再上线"]),
+            on_polish_delta=emitter,
+        ))
+        out = await nodes.llm_polish(_coach_state("low_health"))
+
+        assert out["polished_message"] == "快撤回城补给再上线"
+        assert emitted[0] == "快撤"                   # 首块不等节流，overlay 立即可见
+        assert emitted[-1] == "快撤回城补给再上线"      # 落锤前推完整文本
+
+    @pytest.mark.asyncio
+    async def test_stream_empty_falls_back_to_draft(self):
+        """流式无任何输出 → 回退草稿，不做推送."""
+        emitted: list[str] = []
+
+        async def emitter(tip, text):
+            emitted.append(text)
+
+        nodes = GraphNodes(GraphDeps(llm=FakeStreamLLM([]), on_polish_delta=emitter))
+        out = await nodes.llm_polish(_coach_state("low_health"))
+        assert out["polished_message"] == "draft"
+        assert emitted == []
+
+    @pytest.mark.asyncio
+    async def test_emitter_failure_does_not_break_polish(self):
+        """overlay 推送失败不中断润色——文本仍然完整产出."""
+
+        async def bad_emitter(tip, text):
+            raise RuntimeError("overlay gone")
+
+        nodes = GraphNodes(GraphDeps(
+            llm=FakeStreamLLM(["块1", "块2"]), on_polish_delta=bad_emitter))
+        out = await nodes.llm_polish(_coach_state("low_health"))
+        assert out["polished_message"] == "块1块2"
