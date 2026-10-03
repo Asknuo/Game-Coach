@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -60,6 +61,8 @@ class CollectorSession:
         initial = build_initial_state(
             event, snapshot, item.get("signals", []), item.get("priority", 1),
         )
+        ingest_ts = item.get("_ingest_ts")  # _on_event 打点，无则跳过埋点
+        graph_t0 = time.monotonic()
         try:
             result = await ctx.coaching_graph.ainvoke(initial)
         except Exception:
@@ -84,6 +87,19 @@ class CollectorSession:
             logger.warning("Send tip failed (connection closed)")
 
         await broadcast.broadcast_tip_json(ctx, tip_json)
+
+        # ── 延迟埋点：事件进入 agent（_on_event 打点）→ overlay 收到 tip ──
+        # total 拆成 queue（防抖窗口 + 调度）与 pipeline（图执行，含 RAG 与 LLM 润色）
+        if ingest_ts is not None:
+            pipeline = time.monotonic() - graph_t0
+            total = time.monotonic() - ingest_ts
+            metrics["latency_total_s"] = metrics.get("latency_total_s", 0.0) + total
+            metrics["latency_pipeline_s"] = metrics.get("latency_pipeline_s", 0.0) + pipeline
+            logger.info(
+                "tip latency: %s total=%.2fs (queue=%.2fs, pipeline=%.2fs)",
+                event.name, total, total - pipeline, pipeline,
+            )
+
         await broadcast.record_advice_context(ctx, tip, result, self.latest_state)
 
     async def _on_state(self, msg: WSMessage) -> None:
@@ -118,6 +134,7 @@ class CollectorSession:
                 "signals": [],
                 "priority": 3,
                 "_snapshot": self.latest_state,
+                "_ingest_ts": time.monotonic(),
             })
             return
 
@@ -126,6 +143,7 @@ class CollectorSession:
             "event": event,
             "signals": [],
             "priority": events.event_priority(event),
+            "_ingest_ts": time.monotonic(),
         })
 
     def _spawn_coaching(self, item: dict) -> None:

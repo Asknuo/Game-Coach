@@ -93,8 +93,10 @@ class MemoryQueue:
         6s 窗口：攒满 burst_flush_at 条立即消费。
         """
         # 可中断等待：等攒批信号，最多 window 秒
+        burst = False
         try:
             await asyncio.wait_for(self._flush_event.wait(), timeout=self.window)
+            burst = True
         except asyncio.TimeoutError:
             pass
         self._flush_event.clear()
@@ -108,6 +110,18 @@ class MemoryQueue:
         # 按优先级降序 + 截断
         batch.sort(key=lambda x: x.get("priority", 1), reverse=True)
         batch = batch[: self.max_per_window]
+
+        # flush 诊断日志：突发/窗口触发 + 队内最长等待（session 埋点缺失时跳过）
+        waits = [
+            time.monotonic() - it["_ingest_ts"]
+            for it in batch
+            if it.get("_ingest_ts") is not None
+        ]
+        if waits:
+            logger.info(
+                "queue flush: %d events via %s, waited=%.2fs",
+                len(batch), "burst" if burst else "window", max(waits),
+            )
 
         if not self._handler:
             return

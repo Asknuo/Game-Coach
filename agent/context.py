@@ -27,7 +27,7 @@ from planner.planner import Planner
 from services import broadcast
 
 
-def _default_metrics() -> dict[str, int]:
+def _default_metrics() -> dict[str, int | float]:
     """轻量运行时指标（/health 暴露）."""
     return {
         "events_received": 0,
@@ -38,6 +38,9 @@ def _default_metrics() -> dict[str, int]:
         "graph_errors": 0,
         "advice_followed": 0,
         "advice_expired": 0,
+        # tip 延迟累计（秒）：除以 tips_published 得均值
+        "latency_total_s": 0.0,
+        "latency_pipeline_s": 0.0,
     }
 
 
@@ -55,7 +58,7 @@ class AppContext:
     engine: CoachEngine
     queue: MemoryQueue
     coaching_graph: Any
-    metrics: dict[str, int] = field(default_factory=_default_metrics)
+    metrics: dict[str, int | float] = field(default_factory=_default_metrics)
     overlay_clients: set[WebSocket] = field(default_factory=set)
 
 
