@@ -15,9 +15,29 @@ def _item(name: str, priority: int = 1) -> dict:
 def test_defaults_match_documented_debounce():
     """默认参数与 README 防抖表 / context.py 实际注入值一致（B6）."""
     q = MemoryQueue()
-    assert q.window == 15.0
+    assert q.window == 6.0
     assert q.max_per_window == 2
     assert q.skill_cooldown == 25.0
+    assert q.burst_flush_at == 3
+
+
+@pytest.mark.asyncio
+async def test_burst_flushes_before_window_expiry():
+    """窗口内攒满 burst_flush_at 条 → 立即消费，不等窗口到期（团战场景）."""
+    handled: list[str] = []
+
+    async def handler(item: dict) -> None:
+        handled.append(item["event"].name)
+
+    q = MemoryQueue(window=10.0, max_per_window=3, skill_cooldown=0.0, burst_flush_at=3)
+    q.set_handler(handler)
+    for name in ("kill", "enemy_gold_lead", "teamfight_detected"):
+        await q.enqueue(_item(name))
+
+    # 0.5s 远小于 10s 窗口：若突发触发失效，此刻 handled 应为空
+    await asyncio.sleep(0.5)
+    assert handled == ["kill", "enemy_gold_lead", "teamfight_detected"]
+    assert q.pending_count == 0
 
 
 @pytest.mark.asyncio

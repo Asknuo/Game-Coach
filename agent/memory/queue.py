@@ -4,8 +4,9 @@
 判定见 services/events.py is_urgent）由会话层直接绕过本队列处理；
 本队列只做防御性过滤（URGENT_EVENTS 无条件项）避免误入。
 
-注意：窗口语义为「固定窗口」— 从窗口内首个事件入队起计时，
-到期后批量消费；窗口期间后续事件只入队、不延长窗口。
+注意：窗口语义为「固定窗口 + 突发提前」— 从窗口内首个事件入队起计时，
+到期后批量消费；窗口期间后续事件只入队、不延长窗口。唯一例外：事件攒满
+burst_flush_at 条（团战爆发）时立即提前消费，突发的 tip 延迟从 window 降到接近 0。
 """
 
 import asyncio
@@ -25,17 +26,23 @@ class MemoryQueue:
     max_per_window: 每窗口最多推送的建议数
     skill_cooldown: 同一 skill 的最小间隔 (秒)（按映射后的 skill 粒度，
                     而非事件名 — item_purchased 与 gold_spike 同属 build）
+    burst_flush_at: 窗口内事件攒到该条数立即提前消费（团战爆发）；
+                    置 0 关闭突发触发
     """
 
     def __init__(
         self,
-        window: float = 15.0,
+        window: float = 6.0,  # 6s ≈ 一波团战节奏；过长的窗口会让建议到时已过期
         max_per_window: int = 2,
         skill_cooldown: float = 25.0,
+        burst_flush_at: int = 3,
     ):
         self.window = window
         self.max_per_window = max_per_window
         self.skill_cooldown = skill_cooldown
+        self.burst_flush_at = burst_flush_at
+        # 突发提前消费信号：drain 在窗口内等待此信号，攒批即醒（3.10+ 无需运行循环即可创建）
+        self._flush_event = asyncio.Event()
 
         self._pending: list[dict] = []
         self._last_skill_time: dict[str, float] = {}
@@ -71,13 +78,26 @@ class MemoryQueue:
         self._pending.append(item)
         self._last_skill_time[cd_key] = now
 
+        # 突发检测：窗口内事件攒满阈值 → 唤醒 drain 立即消费（不等窗口到期）
+        if self.burst_flush_at and len(self._pending) >= self.burst_flush_at:
+            self._flush_event.set()
+
         # 窗口已在计时则沿用（固定窗口语义）；否则启动新窗口
         if self._drain_task is None or self._drain_task.done():
             self._drain_task = asyncio.create_task(self._drain())
 
     async def _drain(self):
-        """窗口到期后消费队列（同批事件并发处理，避免串行等待 LLM）."""
-        await asyncio.sleep(self.window)
+        """窗口到期或攒批信号触发时消费队列（同批事件并发处理，避免串行等待 LLM）.
+
+        突发场景（团战：kill → gold_lead → tower 几秒内连续到达）不再干等
+        6s 窗口：攒满 burst_flush_at 条立即消费。
+        """
+        # 可中断等待：等攒批信号，最多 window 秒
+        try:
+            await asyncio.wait_for(self._flush_event.wait(), timeout=self.window)
+        except asyncio.TimeoutError:
+            pass
+        self._flush_event.clear()
 
         if not self._pending:
             return
@@ -100,6 +120,11 @@ class MemoryQueue:
             if isinstance(res, Exception):
                 logger.error("queue handler failed for event=%s: %s",
                              item["event"].name, res)
+
+        # 消费期间（LLM 润色可达 1-3s）新入队的事件没有对应计时器，
+        # 会滞留到下一条事件才被带走 — 补启一个 drain 收尾
+        if self._pending:
+            self._drain_task = asyncio.create_task(self._drain())
 
     async def _safe_handle(self, item: dict):
         try:
