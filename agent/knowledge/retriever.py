@@ -23,6 +23,50 @@ class Retriever:
     def available(self) -> bool:
         return self.store.available and self.embedder.available
 
+    # ---- 查询串构造（与 lifecycle 预热共享同一来源，保证 embed LRU 命中） ----
+
+    @staticmethod
+    def matchup_query(champion: str) -> str:
+        """对线检索查询串（aggregate 第 2 步与启动预热共用）."""
+        return f"matchup against {champion} early game laning tips"
+
+    @staticmethod
+    def counter_query(champion: str) -> str:
+        """反制技巧检索查询串（aggregate 第 2 步与启动预热共用）."""
+        return f"{champion} enemy tips counter"
+
+    # ---- 启动预热（lifecycle.bg_warmup 调用） ----
+
+    def list_champions(self) -> list[str]:
+        """KB 内全部英雄名（guides metadata），预热时枚举查询串用."""
+        try:
+            res = self.store.guides.get(include=["metadatas"])
+        except Exception:
+            logger.exception("List champions failed")
+            return []
+        champs = {
+            m.get("champion")
+            for m in (res.get("metadatas") or [])
+            if isinstance(m, dict) and m.get("champion")
+        }
+        return sorted(champs)
+
+    def warm_collections(self, probe_query: str, champion: str | None = None) -> None:
+        """每张集合各查一次，触发 Chroma 首次 query 时才发生的惰性索引加载.
+
+        否则一局的首条 tip 要额外付索引加载的几十到几百 ms。
+        探针查询的向量已由 embed_queries 预热 → 纯本地操作。
+        """
+        try:
+            if champion:
+                self.search_guide(champion, probe_query, phase="early", n=1)
+            else:
+                self._search(self.store.guides, probe_query, n=1)
+            self.search_game_info(probe_query, n=1)
+            self.search_items(probe_query, n=1)
+        except Exception:
+            logger.exception("Warm collections failed")
+
     # ---- 装备 ----
 
     def search_items(self, query: str, n: int = 3) -> list[dict]:
@@ -39,33 +83,19 @@ class Retriever:
         n: int = 3,
     ) -> list[dict]:
         """按英雄名 + 可选阶段过滤的攻略检索。支持大小写不敏感匹配。"""
-        # 尝试小写和首字母大写两种形式（兼容手动和自动攻略）
-        where_list = [
-            {"champion": champion},
-            {"champion": champion.lower()},
-            {"champion": champion.capitalize()},
-        ]
-        # 去重
-        seen = set()
-        unique_where = []
-        for w in where_list:
-            key = tuple(sorted(w.items()))
-            if key not in seen:
-                seen.add(key)
-                unique_where.append(w)
+        # 单次 $or 查询覆盖全部大小写变体（兼容手动和自动攻略），
+        # 代替原来最多 3 次的串行变体查询
+        names = {champion, champion.lower(), champion.capitalize()}
+        where: dict = {"$or": [{"champion": c} for c in names]}
+        if phase:
+            where = {"$and": [where, {"phase": phase}]}
 
-        all_results = []
-        for where in unique_where:
-            w: dict = {"champion": where["champion"]}
-            if phase:
-                w["phase"] = phase
-            results = self._search(self.store.guides, query, n=n * 2, where=w)
-            all_results.extend(results)
+        results = self._search(self.store.guides, query, n=n * 2, where=where)
 
         # 去重并按相似度截取（ChromaDB 按距离排序，前面的更相关）
         seen_docs = set()
         deduped = []
-        for r in all_results:
+        for r in results:
             if r["document"] not in seen_docs:
                 seen_docs.add(r["document"])
                 deduped.append(r)
@@ -115,6 +145,17 @@ class Retriever:
         if not self.available:
             return ""
 
+        # 预取本流程将用到的全部查询向量：一次批量请求（OpenAI）或线程池并行
+        # （火山引擎）代替原来的串行远程调用，之后各 search_* 内部的
+        # embed_query 全部命中缓存，不再产生额外网络往返
+        info_query = event_query or event_name
+        prefetch = [info_query] if info_query else []
+        if enemy_champion and event_query:
+            # 查询串经 matchup_query/counter_query 构造，与启动预热共享来源
+            prefetch.append(self.matchup_query(ally_champion))
+            prefetch.append(self.counter_query(enemy_champion))
+        self.embedder.embed_queries(prefetch)
+
         parts: list[str] = []
 
         # 推断游戏阶段
@@ -140,7 +181,7 @@ class Retriever:
         # 2. 敌方英雄信息 + 对线策略
         if enemy_champion and event_query:
             enemy_guide = self.search_guide(
-                enemy_champion, f"matchup against {ally_champion} early game laning tips", n=2
+                enemy_champion, self.matchup_query(ally_champion), n=2
             )
             for r in enemy_guide:
                 doc = r["document"]
@@ -152,7 +193,7 @@ class Retriever:
             # 特殊：查对抗技巧
             counter_tips = self._search(
                 self.store.guides,
-                f"{enemy_champion} enemy tips counter",
+                self.counter_query(enemy_champion),
                 n=1,
                 where={"champion": enemy_champion},
             )
@@ -164,8 +205,7 @@ class Retriever:
                     parts.append(f"Counter tip: {doc}")
 
         # 3. 事件相关游戏知识
-        if event_name or event_query:
-            info_query = event_query or event_name
+        if info_query:
             info = self.search_game_info(info_query, n=2)
             for r in info:
                 doc = r["document"]

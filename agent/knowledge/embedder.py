@@ -38,6 +38,7 @@ class Embedder:
         )
         self.base_url = os.getenv("EMBEDDING_BASE_URL", "")
         self._client = None
+        self._query_cache: OrderedDict | None = None  # LRU：惰性创建
         self._backend = "openai"  # "openai" or "volces"
         self.available = False
 
@@ -75,23 +76,53 @@ class Embedder:
         else:
             return self._embed_openai(texts)
 
+    def _cache_get(self, text: str) -> list[float] | None:
+        """LRU 读：命中时把 key 移到队尾（最近使用）。"""
+        cache = self._query_cache
+        if cache is None or text not in cache:
+            return None
+        cache.move_to_end(text)
+        return cache[text]
+
+    def _cache_put(self, text: str, emb: list[float]) -> None:
+        """LRU 写：新条目进队尾，超过 512 条时淘汰队头（最久未用）。"""
+        if self._query_cache is None:
+            self._query_cache = OrderedDict()
+        self._query_cache[text] = emb
+        if len(self._query_cache) > _QUERY_CACHE_SIZE:
+            self._query_cache.popitem(last=False)
+
     def embed_query(self, text: str) -> list[float] | None:
         """单条查询 embedding，带 LRU 缓存（远程 API 调用，延迟+费用双高）."""
-        cache = getattr(self, "_query_cache", None)
-        if cache is None:
-            cache = self._query_cache = OrderedDict()
-        if text in cache:
-            cache.move_to_end(text)
-            return cache[text]
-
-        result = self.embed([text])
-        if result:
-            emb = result[0]
-            cache[text] = emb
-            if len(cache) > _QUERY_CACHE_SIZE:
-                cache.popitem(last=False)
+        emb = self._cache_get(text)
+        if emb is not None:
             return emb
+        result = self.embed([text])
+        if result and result[0]:
+            self._cache_put(text, result[0])
+            return result[0]
         return None
+
+    def embed_queries(self, texts: list[str]) -> None:
+        """批量预取查询 embedding 并写入 LRU 缓存。
+
+        OpenAI 后端一次批量请求完成全部缺失查询（原本逐条串行 3 次远程
+        调用 → 1 次）；火山引擎后端走 _embed_volces 的线程池并行。
+        预取后流程内所有 embed_query 全部命中缓存，检索不再产生额外
+        远程调用。
+        """
+        if not self.available or not texts:
+            return
+        unique = list(dict.fromkeys(t for t in texts if t))
+        missing = [t for t in unique if self._cache_get(t) is None]
+        if not missing:
+            return
+        results = self.embed(missing)
+        if not results:
+            return
+        for text, emb in zip(missing, results):
+            if emb:
+                self._cache_put(text, emb)
 
     # ── OpenAI 后端 ──
 
@@ -170,7 +201,7 @@ class Embedder:
                 },
                 method="POST",
             )
-            with urlopen(req, timeout=120) as resp:
+            with urlopen(req, timeout=10) as resp:  # 120→10：挂起请求会钉死 to_thread 线程池 2 分钟
                 raw = resp.read().decode("utf-8")
         except Exception:
             logger.exception("Volces embedding request failed")

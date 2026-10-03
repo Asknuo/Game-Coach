@@ -36,7 +36,10 @@ def _build_rag_query(state: CoachState) -> str:
 
     event_name = state["event_name"]
     event_data = state.get("event_data", {})
-    parts = [state["skill_message"]]
+    # skill_message（面向用户的中文建议，含动态数字/英雄名）不进检索查询：
+    # 1) 动态文本让 embed LRU 每次都 miss；2) KB 是英文语料，
+    #    英文事件片段才是检索信号，中文建议文本只会污染 embedding
+    parts: list[str] = []
 
     if event_name == "dragon_soon":
         parts.append("dragon fight positioning objective strategy")
@@ -57,16 +60,23 @@ def _build_rag_query(state: CoachState) -> str:
     elif event_name == "enemy_item_purchased":
         parts.extend(_rag_query_enemy_item(state, get_item_resolver()))
     elif event_name == "kill":
-        kills = event_data.get("total_kills", 1)
-        parts.append(f"after getting kill {kills} what to do objective push tower dragon capitalize advantage")
+        # 查询串不拼动态数字（total_kills/gold_gap/kills）：数字会让每次的
+        # 字符串都不同，LRU 缓存永远 miss；且数字对 embedding 语义几乎无贡献
+        parts.append("after getting a kill what to do objective push tower dragon capitalize advantage")
     elif event_name == "enemy_gold_lead":
         enemy_champ = event_data.get("enemy_champion", "")
-        gap = event_data.get("gold_gap", 0)
-        parts.append(f"enemy {enemy_champ} has {gap:.0f} gold lead how to play from behind counter fed enemy")
+        parts.append(f"enemy {enemy_champ} has a gold lead how to play from behind counter fed enemy")
     elif event_name == "enemy_fed":
         enemy_champ = event_data.get("enemy_champion", "")
-        kills = event_data.get("kills", 0)
-        parts.append(f"enemy {enemy_champ} fed {kills} kills how to shut down shutdown target counter")
+        parts.append(f"enemy {enemy_champ} is fed how to shut down fed enemy shutdown target counter")
+    elif event_name == "gold_spike":
+        parts.append("gold advantage power spike next item purchase timing")
+    elif event_name == "laning_check":
+        parts.append("laning wave management trade timing minion control")
+    elif event_name == "macro_check":
+        parts.append("macro rotations objective priority map movement")
+    elif event_name == "teamfight_detected":
+        parts.append("teamfight positioning target priority focus frontline backline")
     else:
         parts.append("strategy tips priority")
 
