@@ -7,6 +7,7 @@
 import logging
 import os
 from collections.abc import Callable
+from functools import lru_cache
 
 import yaml
 
@@ -238,6 +239,7 @@ def get_skill_context(skill_name: str) -> str:
     return meta.get("_body", "")
 
 
+@lru_cache(maxsize=None)  # skill 文件是静态的，进程内缓存即可
 def get_skill_gotchas(skill_name: str) -> str:
     """获取某个 skill 的 gotchas.md 内容."""
     path = os.path.join(SKILLS_DIR, skill_name, "gotchas.md")

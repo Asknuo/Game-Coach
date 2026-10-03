@@ -38,8 +38,11 @@ async def lifespan(app: FastAPI):
     # 保留后台任务引用，防止被 GC 提前回收（弱引用 create_task 的已知陷阱）
     ingest_task = lifecycle.maybe_start_ingest(ctx)
     save_task = asyncio.create_task(lifecycle.periodic_save(ctx))
+    # 知识预热：等可能的摄入完成后，把游戏期的冷启动成本挪到启动时
+    warmup_task = asyncio.create_task(lifecycle.bg_warmup(ctx, ingest_task))
     yield
     save_task.cancel()
+    warmup_task.cancel()
     if ingest_task and not ingest_task.done():
         ingest_task.cancel()
     ctx.memory_store.save("default", ctx.memory)

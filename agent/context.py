@@ -22,7 +22,9 @@ from memory.models import PlayerMemory
 from memory.queue import MemoryQueue
 from memory.redis_store import RedisStore
 from memory.store import MemoryStore
+from models.state import WSMessage
 from planner.planner import Planner
+from services import broadcast
 
 
 def _default_metrics() -> dict[str, int]:
@@ -78,19 +80,11 @@ def build_context() -> AppContext:
     engine._on_game_saved = lambda: memory_store.save("default", memory)
 
     # ── 防抖队列（LangGraph 的前置过滤层） ──
-    queue = MemoryQueue(window=15.0, max_per_window=2, skill_cooldown=25.0)
+    queue = MemoryQueue(window=6.0, max_per_window=2, skill_cooldown=25.0, burst_flush_at=3)
 
     # ── LangGraph Coaching 图（显式依赖注入） ──
-    coaching_graph = build_coaching_graph(GraphDeps(
-        planner=planner,
-        llm=llm,
-        retriever=retriever,
-        injector=injector,
-        redis_store=redis_store,
-        memory=memory,
-    ))
-
-    return AppContext(
+    # emitter 闭包引用 ctx，而 graph 又要放进 ctx —— 先占位建 ctx，再回填 graph
+    ctx = AppContext(
         redis_store=redis_store,
         planner=planner,
         llm=llm,
@@ -100,5 +94,24 @@ def build_context() -> AppContext:
         injector=injector,
         engine=engine,
         queue=queue,
-        coaching_graph=coaching_graph,
+        coaching_graph=None,
     )
+
+    async def _emit_polish_delta(tip, text: str) -> None:
+        """流式润色增量 → overlay（type=tip_stream，客户端可选消费，最终以 tip 消息为准）."""
+        payload = {"skill": tip.skill, "priority": tip.priority, "message": text}
+        await broadcast.broadcast_tip_json(
+            ctx, WSMessage(type="tip_stream", payload=payload).model_dump_json(),
+        )
+
+    ctx.coaching_graph = build_coaching_graph(GraphDeps(
+        planner=planner,
+        llm=llm,
+        retriever=retriever,
+        injector=injector,
+        redis_store=redis_store,
+        memory=memory,
+        on_polish_delta=_emit_polish_delta,
+    ))
+
+    return ctx

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -11,6 +12,7 @@ if TYPE_CHECKING:
     from memory.injector import MemoryInjector
     from memory.models import PlayerMemory
     from memory.redis_store import RedisStore
+    from models.state import CoachingTip
     from planner.planner import Planner
 
 
@@ -28,3 +30,5 @@ class GraphDeps:
     injector: MemoryInjector | None = None
     redis_store: RedisStore | None = None
     memory: PlayerMemory | None = None
+    # 流式润色增量回调：(tip, 累计文本) → 推送 overlay；None = 走非流式 apolish
+    on_polish_delta: Callable[[CoachingTip, str], Awaitable[None]] | None = None

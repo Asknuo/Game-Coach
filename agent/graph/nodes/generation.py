@@ -1,6 +1,7 @@
 """生成阶段节点 — inject_memory / llm_polish."""
 
 import logging
+import time
 
 from graph.state import CoachState
 
@@ -65,10 +66,33 @@ class GenerationMixin:
 
         rag_ctx = "\n\n".join(parts) if parts else None
 
+        emitter = self.deps.on_polish_delta
         try:
-            # 异步链路：不阻塞 FastAPI 事件循环
-            result = await llm.apolish(tip, snapshot, rag_context=rag_ctx)
-            state["polished_message"] = result.message
+            if emitter:
+                # 流式：增量实时推送 overlay（0.1s 节流，避免逐 token 洪泛）。
+                # 最终完整文本再推一次，随后 session 层的权威 tip 消息落锤。
+                pieces: list[str] = []
+                last_emit = 0.0
+                async for delta in llm.apolish_stream(tip, snapshot, rag_context=rag_ctx):
+                    pieces.append(delta)
+                    now = time.monotonic()
+                    if now - last_emit >= 0.1:
+                        last_emit = now
+                        try:
+                            await emitter(tip, "".join(pieces))
+                        except Exception:
+                            logger.exception("polish delta emit failed")
+                if pieces:
+                    try:
+                        await emitter(tip, "".join(pieces))
+                    except Exception:
+                        logger.exception("polish final emit failed")
+                text = "".join(pieces).strip()
+                state["polished_message"] = text if text else state["skill_message"]
+            else:
+                # 非流式（测试 / 未注入 emitter 的场景）：行为与原实现一致
+                result = await llm.apolish(tip, snapshot, rag_context=rag_ctx)
+                state["polished_message"] = result.message
             logger.debug("llm_polish: %s", state["polished_message"][:80])
         except Exception:
             logger.exception("llm_polish failed")

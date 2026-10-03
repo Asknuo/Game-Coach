@@ -4,6 +4,7 @@ import glob
 import logging
 import os
 import shutil
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ class MemoryStore:
             base_dir = os.path.join(os.path.dirname(__file__), "data")
         self.base_dir = base_dir
         self.backup_dir = os.path.join(base_dir, "backups")
+        self._save_lock = threading.Lock()  # 序列化磁盘写入（periodic_save 走线程后防并发）
         try:
             os.makedirs(base_dir, exist_ok=True)
             os.makedirs(self.backup_dir, exist_ok=True)
@@ -49,17 +51,18 @@ class MemoryStore:
     def save(self, session_id: str, memory: PlayerMemory):
         if not self.available:
             return
-        memory.last_updated = datetime.now(timezone.utc).isoformat()
+        with self._save_lock:
+            memory.last_updated = datetime.now(timezone.utc).isoformat()
 
-        # ★ HA #2: 保存前先备份当前文件（失败不阻塞写入）
-        self._backup_before_save(session_id)
+            # ★ HA #2: 保存前先备份当前文件（失败不阻塞写入）
+            self._backup_before_save(session_id)
 
-        try:
-            Path(self._path(session_id)).write_text(
-                memory.model_dump_json(indent=2), encoding="utf-8"
-            )
-        except Exception:
-            logger.exception("save memory failed for %s", session_id)
+            try:
+                Path(self._path(session_id)).write_text(
+                    memory.model_dump_json(indent=2), encoding="utf-8"
+                )
+            except Exception:
+                logger.exception("save memory failed for %s", session_id)
 
     # ── HA #2: 备份轮转 ──────────────────────────────
 

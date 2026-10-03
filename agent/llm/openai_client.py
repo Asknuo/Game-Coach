@@ -120,6 +120,35 @@ class OpenAIClient:
         self._breaker.record_failure()
         return None
 
+    async def achat_stream(self, messages: list, max_tokens: int,
+                           temperature: float = 0.7):
+        """流式 LLM 调用：逐块 yield 增量文本.
+
+        断路器语义同 achat；流式中途失败不重试（已产出的增量由调用方
+        决定去留——tip 链路会拼接为部分文本），正常结束记 success.
+        """
+        aclient = self._get_async_client()
+        if not aclient or self._breaker.is_open():
+            return
+
+        try:
+            stream = await aclient.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=True,
+            )
+            async for chunk in stream:
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        yield delta.content
+            self._breaker.record_success()
+        except Exception:
+            logger.exception("achat_stream failed")
+            self._breaker.record_failure()
+
     # ── Prompt 构建（同步/异步共用） ──
 
     @staticmethod
@@ -170,3 +199,18 @@ class OpenAIClient:
         if text:
             tip.message = text
         return tip
+
+    async def apolish_stream(self, tip: CoachingTip, state: GameState | None,
+                             rag_context: str | None = None):
+        """流式润色：逐块 yield 增量文本（调用方负责拼接与推送）."""
+        if not self._get_async_client() or self._breaker.is_open():
+            return
+        user_prompt, max_tokens = self._build_polish_prompt(tip, state, rag_context)
+        async for delta in self.achat_stream(
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+        ):
+            yield delta

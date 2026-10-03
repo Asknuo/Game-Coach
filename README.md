@@ -166,7 +166,7 @@ Game Coach/
 │   │   ├── store.py                #   MemoryStore — 本地 JSON 持久化
 │   │   ├── redis_store.py          #   RedisStore — 会话级状态缓存 + tip 去重
 │   │   ├── injector.py             #   MemoryInjector — 格式化记忆为 LLM 可读上下文
-│   │   ├── queue.py                #   MemoryQueue — 防抖队列（15s 窗口 / 最多 2 条）
+│   │   ├── queue.py                #   MemoryQueue — 防抖队列（6s 窗口 / 最多 2 条）
 │   │   └── coach_engine.py         #   CoachEngine — 对局断开时生成摘要
 │   │
 │   └── tests/                      # pytest — 节点逻辑 / 记忆 / 队列
@@ -532,7 +532,13 @@ skills/{skill_name}/
 | `state` | Collector → Agent | 完整游戏状态（事件驱动：有事件时随事件发送；无事件时每 20s 心跳一帧） |
 | `event` | Collector → Agent | 检测到的事件 |
 | `tip` | Agent → Collector / Overlay | 教练建议（LangGraph 流水线输出） |
+| `tip_stream` | Agent → Overlay | 流式润色增量（payload.message 为**累计文本**；随后必有权威 `tip` 落锤，客户端可忽略以保持旧行为） |
 | `ping` | Overlay → Agent | 心跳保活（Agent 忽略，不断开连接） |
+
+> **流式润色协议**：`llm_polish` 节点以约 0.1s 节流推送 `tip_stream`，payload 结构与 `tip`
+> 一致（`skill` / `priority` / `message`），其中 `message` 是到当前为止的累计文本。
+> 建议客户端行为：收到首个 `tip_stream` 即渲染卡片并随消息更新文本；收到同 skill 的
+> `tip` 后以 `tip` 为准（内容一致）。voice 客户端只消费 `type == "tip"`，不受影响。
 
 ---
 
@@ -692,7 +698,7 @@ python voice/voice_broadcast.py --min-priority 2   # 只播重要建议
 
 | 层次 | 组件 | 位置 | 参数 |
 |------|------|------|------|
-| **第一层** | MemoryQueue | Agent 入口（LangGraph 前置） | 窗口 15s / 最多 2 条 / 同技能冷却 25s |
+| **第一层** | MemoryQueue | Agent 入口（LangGraph 前置） | 窗口 6s / 最多 2 条 / 同技能冷却 25s / 攒满 3 条立即触发 |
 | **第二层** | Event Engine | Go Collector（事件检测层） | 龙 60s / 低血量 45s / 买装备 30s / 野区 120s / 策略 300s |
 | **第三层** | Redis 去重 | LangGraph validate 节点 | 同 session + skill_name 最近发送过则跳过 |
 

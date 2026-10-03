@@ -12,6 +12,7 @@ from services import broadcast
 
 if TYPE_CHECKING:
     from context import AppContext
+    from knowledge.retriever import Retriever
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +44,78 @@ def maybe_start_ingest(ctx: AppContext) -> asyncio.Task[None] | None:
     return asyncio.create_task(bg_ingest(ctx))
 
 
+# 预热英雄数上限：embed LRU 缓存 512 条，留一半给游戏期的动态查询串
+_MAX_WARM_CHAMPIONS = 200
+
+# 查询串固定的枚举事件（item_sold 等含物品名，组合空间不可枚举，不预热）
+_STATIC_QUERY_EVENTS = (
+    "dragon_soon", "baron_soon", "low_health", "item_purchased",
+    "kill", "gold_spike", "laning_check", "macro_check",
+    "teamfight_detected", "game_end",
+)
+
+
+def _warmup_sync(retriever: "Retriever") -> None:
+    """同步预热主体（线程池里执行，与 embed_query 复用同一 LRU）."""
+    from graph.nodes.routing import _build_rag_query
+
+    champions = retriever.list_champions()[:_MAX_WARM_CHAMPIONS]
+    queries: set[str] = set()
+    for c in champions:
+        queries.add(retriever.matchup_query(c))
+        queries.add(retriever.counter_query(c))
+
+    # 固定查询串的事件模板；模板将来新增必需字段时此处会抛错 → 跳过该事件
+    for name in _STATIC_QUERY_EVENTS:
+        try:
+            queries.add(_build_rag_query({"event_name": name, "event_data": {}}))
+        except Exception:
+            continue
+
+    queries.add("strategy tips priority")  # 未知事件兜底 + 集合探针复用
+    retriever.embedder.embed_queries(sorted(queries))
+    logger.info(
+        "Knowledge warmup: %d champions, %d queries embedded",
+        len(champions), len(queries),
+    )
+    retriever.warm_collections("strategy tips priority", champion=champions[0] if champions else None)
+
+
+async def bg_warmup(ctx: AppContext, ingest_task: asyncio.Task[None] | None) -> None:
+    """启动后台预热：预取英雄/事件查询向量（填 embed LRU）+ 触发 Chroma 索引加载.
+
+    冷启动成本（每局每英雄/事件的首条 tip 付 0.3-1.5s 远程调用 + 索引加载）
+    从「游戏中」挪到「进程启动」。失败静默——预热挂了只是回到冷启动行为，
+    不影响对局。
+    """
+    retriever = ctx.retriever
+    if not retriever.available:
+        logger.info("Knowledge warmup skipped — RAG unavailable")
+        return
+
+    # 摄入进行中 → 先等它完成（否则英雄清单读到的是半成品）
+    if ingest_task is not None:
+        try:
+            await ingest_task
+        except Exception:
+            return  # bg_ingest 已记日志
+
+    try:
+        await asyncio.to_thread(_warmup_sync, retriever)
+    except Exception:
+        logger.exception("Knowledge warmup failed (cold start fallback)")
+        return
+    logger.info("Knowledge warmup finished")
+
+
 async def periodic_save(ctx: AppContext) -> None:
     """HA #1: 每 60 秒自动持久化到磁盘，防止进程崩溃丢数据."""
     while True:
         await asyncio.sleep(60)
         try:
-            ctx.memory_store.save("default", ctx.memory)
+            # 写盘挪到工人线程：同步 IO 卡住事件循环会让 WS 收发/队列消费
+            # 整体停摆几十 ms（记忆越大越久），造成周期性延迟抖动
+            await asyncio.to_thread(ctx.memory_store.save, "default", ctx.memory)
         except Exception:
             logger.exception("Periodic memory save failed")
 
