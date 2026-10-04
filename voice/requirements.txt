@@ -1,2 +1,6 @@
 websockets>=13.0
 pywin32>=306        # Windows SAPI 直连（可选；缺失时自动回退 PowerShell）
+
+# ── 测试依赖（CI 的 voice job 安装；本地跑 voice/tests 同样需要）──
+pytest>=8.0
+pytest-asyncio>=0.23

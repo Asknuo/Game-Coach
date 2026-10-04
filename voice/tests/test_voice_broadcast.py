@@ -2,13 +2,16 @@
 
 import asyncio
 import json
+import subprocess
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 import websockets
 
-from voice_broadcast import PrintSpeaker, TipQueue, VoiceBroadcaster
+import voice_broadcast
+from voice_broadcast import PrintSpeaker, TipQueue, VoiceBroadcaster, parse_args
 
 
 def test_tip_queue_urgent_first():
@@ -210,3 +213,263 @@ def test_stop_clears_backlog_without_speaking():
     b._tts_loop()  # 在当前线程驱动：应立即拿到 EXIT 返回
     assert b.metrics()["spoken"] == 0
     assert sp.spoken == []
+
+# ── P1：溢出丢弃按重要性（先丢普通，后丢紧急） ──
+
+def test_overflow_drops_oldest_normal_before_urgent():
+    """P1 回归：满员时先丢最旧的普通条；全是紧急条才丢最旧紧急条.
+    按到达序一刀切会丢掉团战爆发中最早到达、最该播的紧急条."""
+    q = TipQueue(maxsize=3)
+    q.put("u1", urgent=True)
+    q.put("n1", urgent=False)
+    q.put("u2", urgent=True)            # [u1, u2, n1] 恰好满员
+    assert q.put("n2", urgent=False) == ["n1"]   # 挤掉最旧普通条
+    assert q.put("u3", urgent=True) == ["n2"]    # 新紧急仍挤普通条
+    assert q.last_dropped_urgent == 0
+    # 全是紧急时才丢最旧紧急条
+    assert q.put("u4", urgent=True) == ["u1"]
+    assert q.last_dropped_urgent == 1
+    texts = [q.get_item()[0] for _ in range(3)]
+    assert texts == ["u2", "u3", "u4"]  # 紧急之间保序
+
+
+def test_handle_tip_counts_urgent_overflow_separately():
+    """紧急条被溢出丢弃必须单独计数——agent 25s 冷却内不会补推."""
+    b = VoiceBroadcaster("ws://localhost:0", speaker=PrintSpeaker())
+    b._queue = TipQueue(maxsize=1)
+    b.handle_tip({"message": "紧急一", "skill": "survival", "priority": 3})
+    b.handle_tip({"message": "紧急二", "skill": "dragon", "priority": 3})
+    stats = b.metrics()
+    assert stats["skipped_overflow"] == 1
+    assert stats["skipped_overflow_urgent"] == 1
+
+
+# ── P2：畸形帧防护（不打掉连接） ──
+
+@pytest.mark.asyncio
+async def test_listen_ignores_tip_stream_and_malformed(capsys):
+    """tip_stream（累计文本）不得入播报；非对象帧/payload 非对象/priority
+    非数字都必须安全跳过并计入 malformed，不能让一条畸形帧打掉连接."""
+
+    async def server(ws):
+        await ws.send(json.dumps({  # 流式累计文本：朗读它会逐词复读
+            "type": "tip_stream",
+            "payload": {"message": "快", "tip_id": "t1", "priority": 3},
+        }))
+        await ws.send("[1, 2]")              # 合法 JSON 但非对象
+        await ws.send("{\"type\": \"tip\", \"payload\": [1]}")   # payload 非对象
+        await ws.send(json.dumps({
+            "type": "tip",
+            "payload": {"message": "正常建议", "skill": "dragon", "priority": "high"},
+        }))
+        await ws.close()
+
+    async with websockets.serve(server, "127.0.0.1", 0) as srv:
+        port = srv.sockets[0].getsockname()[1]
+        url = f"ws://127.0.0.1:{port}/ws/overlay"
+        b = VoiceBroadcaster(url, speaker=PrintSpeaker())
+        b.start()
+        try:
+            async with websockets.connect(url) as ws:
+                await b._listen(ws)   # 不抛异常即不断线
+            deadline = time.monotonic() + 3
+            while b.metrics()["spoken"] < 1 and time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+            stats = b.metrics()
+            assert stats["malformed"] == 3
+            assert stats["received"] == 1      # 只有权威 tip 被受理
+            assert stats["spoken"] == 1        # priority 脏值降级为 1 后仍播出
+        finally:
+            b.stop()
+
+
+# ── P1：库级 keepalive（半开连接检测） ──
+
+@pytest.mark.asyncio
+async def test_connect_uses_library_keepalive(monkeypatch):
+    """P1 回归：必须启用库级 ping_interval/ping_timeout——单向应用层
+    心跳无法发现半开连接（休眠/切网后永久静默挂死）."""
+    captured = {}
+
+    class _FakeConnect:
+        """websockets.connect 替身：记录参数，__aenter__ 即失败."""
+
+        def __init__(self, url, **kwargs):
+            captured.update(kwargs)
+            b._stop.set()  # 请求退出，避免真实退避等待
+
+        async def __aenter__(self):
+            raise ConnectionError("no server")
+
+        async def __aexit__(self, *exc):
+            return False
+
+    # 只垫片 voice_broadcast 看到的 asyncio（不能 patch 全局 asyncio，
+    # 会连带停掉 pytest-asyncio 自己的 sleep）
+    shim = SimpleNamespace(
+        sleep=lambda _s: asyncio.sleep(0),
+        CancelledError=asyncio.CancelledError,
+    )
+    monkeypatch.setattr(voice_broadcast, "asyncio", shim)
+    monkeypatch.setattr(voice_broadcast.websockets, "connect", _FakeConnect)
+
+    b = VoiceBroadcaster("ws://localhost:1", speaker=PrintSpeaker())
+    await b.run()
+
+    assert captured.get("ping_interval") == 20
+    assert captured.get("ping_timeout") == 20
+
+
+# ── P2：PowerShell 回退路径 ──
+
+class _FakeProc:
+    def __init__(self, returncode=None):
+        self.returncode = returncode
+        self.killed = False
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+
+
+def test_powershell_returns_false_when_start_fails(monkeypatch):
+    """Popen 起不来 → 返回 False（未完整播出），不能谎报 spoken."""
+    def boom(*a, **kw):
+        raise OSError("no powershell")
+
+    monkeypatch.setattr(voice_broadcast.subprocess, "Popen", boom)
+    assert voice_broadcast.SapiSpeaker._speak_powershell("测试") is False
+
+
+def test_powershell_killed_on_interrupt(monkeypatch):
+    """紧急插队时 kill PowerShell 子进程并返回 False（可打断）."""
+    proc = _FakeProc(returncode=None)
+
+    monkeypatch.setattr(voice_broadcast.subprocess, "Popen", lambda *a, **kw: proc)
+    interrupt = threading.Event()
+    interrupt.set()
+
+    assert voice_broadcast.SapiSpeaker._speak_powershell("测试", interrupt) is False
+    assert proc.killed is True
+
+
+def test_powershell_hides_window_on_windows(monkeypatch):
+    """后台常驻场景：不能弹控制台窗口抢游戏焦点（Windows）."""
+    captured = {}
+
+    def fake_popen(*a, **kw):
+        captured.update(kw)
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(voice_broadcast.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(voice_broadcast.os, "name", "nt", raising=False)
+
+    assert voice_broadcast.SapiSpeaker._speak_powershell("测试") is True
+    assert captured["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+# ── P2：SAPI 路径（假 COM，跨平台可跑） ──
+
+class _FakeSapi:
+    def __init__(self):
+        self.speak_calls = []
+        self.skip_calls = []
+        self.status = SimpleNamespace(RunningState=0)  # 0=播放中
+        self.rate = None
+
+    def Speak(self, text, flags):
+        self.speak_calls.append((text, flags))
+
+    def Skip(self, kind, count):
+        self.skip_calls.append((kind, count))
+
+    @property
+    def Status(self):
+        return self.status
+
+    def GetVoices(self):
+        return self
+
+
+@pytest.fixture
+def fake_sapi(monkeypatch):
+    """注入假 win32com/pythoncom，让 SAPI 路径在非 Windows 上可测."""
+    sapi = _FakeSapi()
+    monkeypatch.setattr(voice_broadcast, "_HAS_PYWIN32", True)
+    monkeypatch.setattr(voice_broadcast, "win32com",
+                        SimpleNamespace(client=SimpleNamespace(Dispatch=lambda name: sapi)),
+                        raising=False)  # 非 Windows 上模块本就不存在
+    import sys
+    import types
+    pythoncom = types.ModuleType("pythoncom")
+    pythoncom.CoInitialize = lambda: None
+    pythoncom.CoUninitialize = lambda: None
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    return sapi
+
+
+def test_sapi_interrupt_skips_and_returns_false(fake_sapi):
+    """打断置位 → Skip 剩余句子 → 返回 False（让路计数）."""
+    sp = voice_broadcast.SapiSpeaker()
+    interrupt = threading.Event()
+    interrupt.set()
+    assert sp.speak("低优建议", interrupt_event=interrupt) is False
+    assert fake_sapi.skip_calls == [("Sentence", 1_000_000)]
+
+
+def test_sapi_urgent_purges_queue(fake_sapi):
+    """紧急条用 SVSFlagsAsync|SVSFPurgeBeforeSpeak，清掉 SAPI 请求队列残余."""
+    sp = voice_broadcast.SapiSpeaker()
+    fake_sapi.status.RunningState = 1  # 立即"播完"
+    assert sp.speak("紧急建议", interrupt_event=None) is True
+    text, flags = fake_sapi.speak_calls[0]
+    assert text == "紧急建议"
+    assert flags == (sp.SVSFlagsAsync | sp.SVSFPurgeBeforeSpeak)
+
+
+def test_sapi_start_failure_falls_back_to_powershell(fake_sapi, monkeypatch):
+    """Speak 发起即失败（未播出内容）→ 回退 PowerShell 重播全文."""
+    calls = []
+
+    def failing_speak(text, flags):
+        raise RuntimeError("device busy")
+
+    fake_sapi.Speak = failing_speak
+    monkeypatch.setattr(
+        voice_broadcast.SapiSpeaker, "_speak_powershell",
+        staticmethod(lambda text, interrupt_event=None: calls.append(text) or True))
+
+    sp = voice_broadcast.SapiSpeaker()
+    assert sp.speak("建议") is True
+    assert calls == ["建议"]
+
+
+def test_sapi_init_failure_is_not_permanent(fake_sapi, monkeypatch):
+    """P3 回归：SAPI 初始化失败只是冷却重试，不是永久闭锁——
+    音频设备临时不可用不该让整个会话降级到 PowerShell."""
+    monkeypatch.setattr(
+        voice_broadcast.win32com.client, "Dispatch",
+        lambda name: (_ for _ in ()).throw(RuntimeError("no audio")))
+
+    sp = voice_broadcast.SapiSpeaker()
+    assert sp._ensure_sapi() is None
+    assert sp._sapi_retry_at > 0  # 冷却截止，而非 _sapi_failed=True 永久闭锁
+
+
+# ── P3：命令行与生命周期 ──
+
+def test_min_priority_validated():
+    with pytest.raises(SystemExit):
+        parse_args(["--min-priority", "5"])
+    with pytest.raises(SystemExit):
+        parse_args(["--min-priority", "abc"])
+    assert parse_args(["--min-priority", "2"]).min_priority == 2
+
+
+def test_run_stop_is_idempotent():
+    b = VoiceBroadcaster("ws://localhost:0", speaker=PrintSpeaker())
+    b.stop()
+    b.stop()  # 重复调用不炸（哨兵幂等）
+    assert b.metrics()["spoken"] == 0
