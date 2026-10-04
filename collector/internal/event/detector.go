@@ -23,9 +23,13 @@ type Event struct {
 //	detector_enemy.go      — enemy tracking (items/gold lead/fed)
 //	detector_periodic.go   — timer/window checks (laning/macro/teamfight)
 type Detector struct {
-	lastState       *lol.GameState
-	dragonWarned    bool
-	baronWarned     bool
+	lastState *lol.GameState
+	// dragon_soon / baron_soon are latched per *spawn identity* (SpawnTime),
+	// not per game: a 20-minute game has 2-4 dragons and each must warn.
+	// noSpawn (-1) means "no spawn seen" — the zero value cannot be used
+	// because SpawnTime 0 would look like a real (already-warned) spawn.
+	lastDragonSpawn float64
+	lastBaronSpawn  float64
 	lowHealthWarned bool
 
 	// -- migrated from Python EventDetector --
@@ -47,7 +51,7 @@ type Detector struct {
 }
 
 func NewDetector() *Detector {
-	return &Detector{}
+	return &Detector{lastDragonSpawn: noSpawn, lastBaronSpawn: noSpawn}
 }
 
 func (d *Detector) Detect(state *lol.GameState) []Event {
@@ -139,8 +143,8 @@ func (d *Detector) firstTickInit(state *lol.GameState) {
 
 func (d *Detector) reset() {
 	d.lastState = nil
-	d.dragonWarned = false
-	d.baronWarned = false
+	d.lastDragonSpawn = noSpawn
+	d.lastBaronSpawn = noSpawn
 	d.lowHealthWarned = false
 	d.lastActiveItems = nil
 	d.lastDeaths = 0

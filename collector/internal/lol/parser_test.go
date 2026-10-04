@@ -6,7 +6,10 @@ import (
 	"testing"
 )
 
-// Regression for ISSUES #54: missing allPlayers/events must marshal as [] not null.
+// Regression for ISSUES #54: missing allPlayers must marshal as [] not null.
+// Events additionally carry the whole game history (100KB+/frame late game), so
+// they are omitted entirely when empty — the agent's Pydantic model defaults
+// them to [] (see agent/models/state.py: events: list = default_factory=list).
 func TestParseGameState_MissingSlicesSerializeAsEmptyArray(t *testing.T) {
 	raw := []byte("{\"gameData\":{\"gameTime\":123.4},\"activePlayer\":{\"summonerName\":\"Ahri\"}}")
 	state, err := ParseGameState(raw)
@@ -19,15 +22,37 @@ func TestParseGameState_MissingSlicesSerializeAsEmptyArray(t *testing.T) {
 	}
 	var m map[string]interface{}
 	if err := json.Unmarshal(out, &m); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
+		t.Fatalf("json.Unmarshal out: %v", err)
 	}
 	players, ok := m["all_players"].([]interface{})
 	if !ok || len(players) != 0 {
 		t.Errorf("all_players = %#v, want empty array", m["all_players"])
 	}
-	events, ok := m["events"].([]interface{})
-	if !ok || len(events) != 0 {
-		t.Errorf("events = %#v, want empty array", m["events"])
+	if ev, present := m["events"]; present {
+		t.Errorf("events = %#v, want the key omitted entirely (never null)", ev)
+	}
+
+	// …and a state that does have events must still carry them.
+	nb := []byte(`{"gameData":{"gameTime":123.4},"activePlayer":{"summonerName":"Ahri"},"events":{"Events":[{"EventID":1,"EventName":"DragonKill","EventTime":100,"DragonType":"Infernal"}]}}`)
+	st2, err := ParseGameState(nb)
+	if err != nil {
+		t.Fatalf("ParseGameState: %v", err)
+	}
+	out2, err := json.Marshal(st2)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var m2 map[string]interface{}
+	if err := json.Unmarshal(out2, &m2); err != nil {
+		t.Fatalf("json.Unmarshal out2: %v", err)
+	}
+	evs, ok := m2["events"].([]interface{})
+	if !ok || len(evs) != 1 {
+		t.Fatalf("events = %#v, want one event", m2["events"])
+	}
+	first, _ := evs[0].(map[string]interface{})
+	if first["event_name"] != "DragonKill" || first["dragon_type"] != "Infernal" {
+		t.Errorf("event = %#v, want the parsed DragonKill", first)
 	}
 }
 

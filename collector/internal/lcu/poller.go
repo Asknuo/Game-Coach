@@ -7,8 +7,15 @@ import (
 )
 
 const (
-	pollInterval    = 2 * time.Second
-	reconnectPeriod = 30 * time.Second
+	pollInterval = 2 * time.Second
+
+	// Reconnect backoff doubles per failed attempt (2s → 4s → … → 30s). The old
+	// flat 30s throttle meant one blip silenced LCU data for half a minute.
+	reconnectBackoffBase = 2 * time.Second
+	reconnectBackoffMax  = 30 * time.Second
+
+	// noGameID marks "game_end was never sent" — gameIds are > 0 in practice.
+	noGameID = int64(-1)
 )
 
 // Callback is invoked with LCU events (name + data).
@@ -23,6 +30,8 @@ type Poller struct {
 	lastPhase       string
 	lastCSPhase     string
 	myPickDone      bool
+	lastEndGameID   int64
+	reconnectFails  int
 	lastReconnect   time.Time
 	latestSummoner  *SummonerInfo
 	latestRunes     *RunePage
@@ -31,8 +40,9 @@ type Poller struct {
 
 func NewPoller(client *Client, cb Callback) *Poller {
 	return &Poller{
-		client:   client,
-		callback: cb,
+		client:        client,
+		callback:      cb,
+		lastEndGameID: noGameID,
 	}
 }
 
@@ -95,25 +105,55 @@ func (p *Poller) poll(ctx context.Context) {
 	}
 }
 
-// tryReconnect retries the LCU connection at most once per reconnectPeriod.
-// The client flips to disconnected on any transport error, so without this
-// one network blip would silently kill LCU data for the rest of the session.
+// tryReconnect retries the LCU connection with exponential backoff
+// (2s → 4s → … → 30s). The client itself only gives up after
+// maxTransportFailures consecutive transport errors, so most blips never even
+// get here; the ones that do retry quickly instead of after a flat 30s.
 func (p *Poller) tryReconnect() {
-	if time.Since(p.lastReconnect) < reconnectPeriod {
+	if time.Since(p.lastReconnect) < p.reconnectBackoff() {
 		return
 	}
 	p.lastReconnect = time.Now()
 	if !p.client.TryConnect() {
+		p.reconnectFails++
 		return
 	}
+	p.reconnectFails = 0
 	log.Println("[LCU] reconnected")
-	// Stale phase trackers would emit a bogus phase change on the first poll.
-	p.lastPhase = ""
-	p.lastCSPhase = ""
-	p.myPickDone = false
+	// Deliberately keep the phase trackers: clearing lastPhase made the next
+	// `phase != p.lastPhase` check trivially true, replaying lcu_game_start
+	// (stale runes overwrote the agent's memory) or game_end (the whole review
+	// ran a second time). Instead, silently adopt the current phase.
+	p.syncPhase()
 	p.fetchSummoner()
 	p.fetchRunes()
 	p.fetchMasteries()
+}
+
+// reconnectBackoff is the current reconnect wait: base doubled once per failed
+// attempt, capped at reconnectBackoffMax.
+func (p *Poller) reconnectBackoff() time.Duration {
+	d := reconnectBackoffBase
+	for i := 0; i < p.reconnectFails; i++ {
+		if d >= reconnectBackoffMax {
+			return reconnectBackoffMax
+		}
+		d *= 2
+	}
+	if d > reconnectBackoffMax {
+		return reconnectBackoffMax
+	}
+	return d
+}
+
+// syncPhase reads the current gameflow phase into lastPhase WITHOUT emitting an
+// event, so a reconnect looks like business as usual on the next poll.
+func (p *Poller) syncPhase() {
+	resp, err := p.client.Get("/lol-gameflow/v1/session")
+	if err != nil || resp == nil {
+		return
+	}
+	p.lastPhase = strVal(resp, "phase")
 }
 
 func (p *Poller) fetchSummoner() {
@@ -143,7 +183,9 @@ func (p *Poller) pollGameFlow() {
 		gamedata = map[string]interface{}{}
 	}
 
-	gameID := intVal(gamedata, "gameId")
+	// gameId is a ms-precision epoch value — float64 would lose precision on
+	// 32-bit builds, so read it as int64.
+	gameID := int64Val(gamedata, "gameId")
 
 	// Phase change detection.
 	if phase != p.lastPhase {
@@ -161,14 +203,22 @@ func (p *Poller) pollGameFlow() {
 		}
 
 		if phase == "InProgress" {
+			// A new game started: allow game_end to fire for it again.
+			p.lastEndGameID = noGameID
 			p.onGameStart()
 		}
 
 		if phase == "EndOfGame" || phase == "WaitingForStats" {
-			p.callback("game_end", map[string]interface{}{
-				"phase":   phase,
-				"game_id": gameID,
-			})
+			// game_end is deduplicated by gameId: the LCU walks through both
+			// phases (and a reconnect used to replay them), which re-ran the
+			// whole review twice.
+			if gameID != p.lastEndGameID {
+				p.lastEndGameID = gameID
+				p.callback("game_end", map[string]interface{}{
+					"phase":   phase,
+					"game_id": gameID,
+				})
+			}
 		}
 	}
 }
@@ -179,7 +229,11 @@ func (p *Poller) pollChampSelect() {
 		return
 	}
 
-	timer := floatVal(resp, "timer", "adjustedPositionInPhase")
+	// The champ-select session exposes the phase timer as a plain number under
+	// "timer" or, when that key is absent, under "adjustedPositionInPhase".
+	// Read the first key that exists — the old vararg helper treated the keys
+	// as a nested path, so the fallback never applied.
+	timer := floatValOr(resp, "timer", "adjustedPositionInPhase")
 	localID := intVal(resp, "localPlayerCellId")
 
 	phase := ""
@@ -287,7 +341,7 @@ func (p *Poller) fetchMasteries() {
 			ChampionID:     intVal(m, "championId"),
 			ChampionLevel:  intVal(m, "championLevel"),
 			ChampionPoints: intVal(m, "championPoints"),
-			LastPlayTime:   int64(intVal(m, "lastPlayTime")),
+			LastPlayTime:   int64Val(m, "lastPlayTime"),
 			ChestGranted:   boolVal(m, "chestGranted"),
 		})
 	}
@@ -370,22 +424,30 @@ func boolVal(m map[string]interface{}, key string) bool {
 	return false
 }
 
-func floatVal(m map[string]interface{}, keys ...string) float64 {
-	var cur interface{} = m
-	for i, key := range keys {
-		if mm, ok := cur.(map[string]interface{}); ok {
-			cur = mm[key]
-		} else {
-			if i == len(keys)-1 {
-				if f, ok := cur.(float64); ok {
-					return f
-				}
-			}
-			return 0
+// int64Val reads a numeric field as int64. Used for millisecond epoch
+// timestamps and gameIds: float64 → int loses precision on 32-bit builds
+// (a 2026 timestamp does not fit in 32 bits).
+func int64Val(m map[string]interface{}, key string) int64 {
+	if v, ok := m[key]; ok {
+		switch vv := v.(type) {
+		case float64:
+			return int64(vv)
+		case int:
+			return int64(vv)
+		case int64:
+			return vv
 		}
 	}
-	if f, ok := cur.(float64); ok {
-		return f
+	return 0
+}
+
+// floatValOr returns the first float64 found among keys — all keys are read at
+// the SAME level of m (a fallback list, not a nested path).
+func floatValOr(m map[string]interface{}, keys ...string) float64 {
+	for _, key := range keys {
+		if f, ok := m[key].(float64); ok {
+			return f
+		}
 	}
 	return 0
 }

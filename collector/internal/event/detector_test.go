@@ -194,7 +194,134 @@ func TestDetect_LowHealth(t *testing.T) {
 	}
 }
 
-func TestDetect_DragonSoonOnce(t *testing.T) {
+// A 25-minute game has 2-4 dragons: each spawn must warn once, and the
+// countdown running out under 30s must not re-warn for the same spawn.
+func TestDetect_DragonSoonPerSpawn(t *testing.T) {
+	d := NewDetector()
+
+	// Dragon #1 spawns at 625 (infernal taken at 325 + 5 min respawn).
+	st := mkState(600)
+	st.DragonTimer = &lol.DragonInfo{Type: "Infernal", SpawnTime: 625, SecondsLeft: 25}
+	if eventByName(d.Detect(st), "dragon_soon") == nil {
+		t.Fatal("expected dragon_soon for the first dragon")
+	}
+
+	// Same spawn, still inside the 30s window — no duplicate.
+	for _, left := range []float64{20, 10, 5} {
+		s := mkState(625 - left)
+		s.DragonTimer = &lol.DragonInfo{Type: "Infernal", SpawnTime: 625, SecondsLeft: left}
+		if hasEvent(d.Detect(s), "dragon_soon") {
+			t.Fatalf("dragon_soon must fire once per spawn, re-fired at %vs left", left)
+		}
+	}
+
+	// Dragon spawns (timer goes away) and is killed; the next spawn appears 5
+	// minutes later — that one must warn again.
+	gone := mkState(626)
+	if hasEvent(d.Detect(gone), "dragon_soon") {
+		t.Fatal("no dragon pending → no dragon_soon")
+	}
+	st2 := mkState(900)
+	st2.DragonTimer = &lol.DragonInfo{Type: "Ocean", SpawnTime: 920, SecondsLeft: 20}
+	if eventByName(d.Detect(st2), "dragon_soon") == nil {
+		t.Fatal("expected dragon_soon for the second dragon of the game")
+	}
+
+	// …and the third one.
+	d.Detect(mkState(1210)) // timer gone again
+	st3 := mkState(1250)
+	st3.DragonTimer = &lol.DragonInfo{Type: "Mountain", SpawnTime: 1270, SecondsLeft: 20}
+	if eventByName(d.Detect(st3), "dragon_soon") == nil {
+		t.Fatal("expected dragon_soon for the third dragon of the game")
+	}
+}
+
+// Baron uses the same spawn-identity latch as dragon.
+func TestDetect_BaronSoonPerSpawn(t *testing.T) {
+	d := NewDetector()
+
+	st := mkState(1200)
+	st.BaronTimer = &lol.BaronInfo{SpawnTime: 1225, SecondsLeft: 25}
+	if eventByName(d.Detect(st), "baron_soon") == nil {
+		t.Fatal("expected baron_soon")
+	}
+
+	st2 := mkState(1210)
+	st2.BaronTimer = &lol.BaronInfo{SpawnTime: 1225, SecondsLeft: 15}
+	if hasEvent(d.Detect(st2), "baron_soon") {
+		t.Fatal("baron_soon must fire once per spawn")
+	}
+
+	st3 := mkState(1226) // baron taken, timer gone
+	if hasEvent(d.Detect(st3), "baron_soon") {
+		t.Fatal("no baron pending → no baron_soon")
+	}
+
+	st4 := mkState(1600)
+	st4.BaronTimer = &lol.BaronInfo{SpawnTime: 1620, SecondsLeft: 20}
+	if eventByName(d.Detect(st4), "baron_soon") == nil {
+		t.Fatal("expected baron_soon for the next baron spawn")
+	}
+}
+
+// Timer outside the warn window (SecondsLeft > 30) must not fire.
+func TestDetect_ObjectiveSoonRespectsWindow(t *testing.T) {
+	d := NewDetector()
+	st := mkState(600)
+	st.DragonTimer = &lol.DragonInfo{Type: "Infernal", SpawnTime: 700, SecondsLeft: 100}
+	if hasEvent(d.Detect(st), "dragon_soon") {
+		t.Fatal("100s left must not warn")
+	}
+	st2 := mkState(640)
+	st2.DragonTimer = &lol.DragonInfo{Type: "Infernal", SpawnTime: 700, SecondsLeft: 25}
+	if eventByName(d.Detect(st2), "dragon_soon") == nil {
+		t.Fatal("25s left must warn")
+	}
+}
+
+// End-to-end for the latch: drives the REAL objective tracker (the live source
+// of dragon_timer) through two dragon kills and asserts both spawns warn.
+func TestDetect_DragonSoonAcrossRealSpawns(t *testing.T) {
+	tracker := lol.NewObjectiveTracker()
+	d := NewDetector()
+
+	// Dragon #1 killed at 320 → respawn 620 (5 min).
+	tick := func(gameTime float64, events []lol.GameEvent) []Event {
+		st := mkState(gameTime)
+		st.Events = events
+		tracker.Enrich(st)
+		return d.Detect(st)
+	}
+
+	if hasEvent(tick(560, []lol.GameEvent{{EventID: 1, EventName: "DragonKill", EventTime: 320, DragonType: "Infernal"}}), "dragon_soon") {
+		t.Fatal("60s left must not warn")
+	}
+	if !hasEvent(tick(600, []lol.GameEvent{{EventID: 1, EventName: "DragonKill", EventTime: 320, DragonType: "Infernal"}}), "dragon_soon") {
+		t.Fatal("20s left must warn for dragon #1")
+	}
+	// Countdown keeps running for the same spawn — still one warning.
+	if hasEvent(tick(610, []lol.GameEvent{{EventID: 1, EventName: "DragonKill", EventTime: 320, DragonType: "Infernal"}}), "dragon_soon") {
+		t.Fatal("same spawn must not warn twice")
+	}
+
+	// Dragon #2 killed at 650 → respawn 950.
+	events := []lol.GameEvent{
+		{EventID: 1, EventName: "DragonKill", EventTime: 320, DragonType: "Infernal"},
+		{EventID: 2, EventName: "DragonKill", EventTime: 650, DragonType: "Cloud"},
+	}
+	if hasEvent(tick(915, events), "dragon_soon") {
+		t.Fatal("35s left is outside the warn threshold — must not warn yet")
+	}
+	if !hasEvent(tick(925, events), "dragon_soon") {
+		t.Fatal("dragon #2 must warn: the latch used to die with the first dragon")
+	}
+	if hasEvent(tick(940, events), "dragon_soon") {
+		t.Fatal("dragon #2 must warn once")
+	}
+}
+
+// engine.Reset() must clear the per-spawn latch.
+func TestDetect_ResetClearsSpawnLatch(t *testing.T) {
 	d := NewDetector()
 	st := mkState(600)
 	st.DragonTimer = &lol.DragonInfo{Type: "Infernal", SpawnTime: 625, SecondsLeft: 25}
@@ -202,7 +329,11 @@ func TestDetect_DragonSoonOnce(t *testing.T) {
 		t.Fatal("expected dragon_soon")
 	}
 	if hasEvent(d.Detect(st), "dragon_soon") {
-		t.Fatal("dragon_soon must be emitted only once per spawn")
+		t.Fatal("same spawn must not re-fire")
+	}
+	d.reset()
+	if eventByName(d.Detect(st), "dragon_soon") == nil {
+		t.Fatal("reset must allow dragon_soon again")
 	}
 }
 

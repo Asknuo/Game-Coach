@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/process"
@@ -26,6 +27,11 @@ var lockfilePaths = []string{
 	`C:\Riot Games\Riot Client\lockfile`,
 }
 
+// maxTransportFailures is how many consecutive transport errors pass before the
+// LCU is treated as gone. A single 5s timeout used to flip connected=false
+// while the reconnect path was throttled by 30s — one blip cost 30s of data.
+const maxTransportFailures = 3
+
 // Client communicates with the League Client Update (LCU) HTTPS API.
 type Client struct {
 	port       string
@@ -33,7 +39,10 @@ type Client struct {
 	baseURL    string
 	authHeader string
 	httpClient *http.Client
+
+	mu         sync.Mutex // guards connected and failStreak
 	connected  bool
+	failStreak int
 }
 
 func NewClient() *Client {
@@ -47,7 +56,38 @@ func NewClient() *Client {
 	}
 }
 
-func (c *Client) Connected() bool { return c.connected }
+func (c *Client) Connected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connected
+}
+
+// setConnected force-sets the connection state (used while probing in connect).
+func (c *Client) setConnected(v bool) {
+	c.mu.Lock()
+	c.connected = v
+	c.mu.Unlock()
+}
+
+// noteTransportFailure records a transport-level error. Only a *run* of them
+// marks the client disconnected — a single timeout or reset just closes the
+// request while the connection itself is fine.
+func (c *Client) noteTransportFailure() {
+	c.mu.Lock()
+	c.failStreak++
+	if c.failStreak >= maxTransportFailures {
+		c.connected = false
+	}
+	c.mu.Unlock()
+}
+
+// noteSuccess clears the failure streak after any completed request (any HTTP
+// status proves the transport is alive; 404 during loading is normal).
+func (c *Client) noteSuccess() {
+	c.mu.Lock()
+	c.failStreak = 0
+	c.mu.Unlock()
+}
 
 // TryConnect attempts to discover and authenticate with the LCU API.
 // Returns true on success.
@@ -193,7 +233,7 @@ func (c *Client) connect(port, password string) bool {
 	c.authHeader = "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
 
 	// Temporarily set connected to pass Get()'s guard.
-	c.connected = true
+	c.setConnected(true)
 
 	// Test connection.
 	resp, err := c.Get("/lol-summoner/v1/current-summoner")
@@ -201,12 +241,12 @@ func (c *Client) connect(port, password string) bool {
 		// Fallback: try gameflow endpoint
 		resp, err = c.Get("/lol-gameflow/v1/session")
 		if err != nil {
-			c.connected = false
+			c.setConnected(false)
 			return false
 		}
 	}
 	if resp == nil {
-		c.connected = false
+		c.setConnected(false)
 		return false
 	}
 	return true
@@ -228,9 +268,10 @@ func (c *Client) Get(path string) (map[string]interface{}, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.connected = false
+		c.noteTransportFailure()
 		return nil, err
 	}
+	c.noteSuccess()
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -242,6 +283,10 @@ func (c *Client) Get(path string) (map[string]interface{}, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
+	// json.Decoder stops as soon as the value is complete; without draining the
+	// rest the connection is not returned to the idle pool and every request
+	// pays a new TCP + TLS handshake (champ select polls 2-3 endpoints / 2s).
+	drainBody(resp.Body)
 	return result, nil
 }
 
@@ -261,9 +306,10 @@ func (c *Client) GetArray(path string) ([]map[string]interface{}, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.connected = false
+		c.noteTransportFailure()
 		return nil, err
 	}
+	c.noteSuccess()
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -275,5 +321,11 @@ func (c *Client) GetArray(path string) ([]map[string]interface{}, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
+	drainBody(resp.Body)
 	return result, nil
+}
+
+// drainBody reads the rest of the body so net/http can reuse the connection.
+func drainBody(body io.Reader) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 1<<20))
 }

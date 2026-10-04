@@ -81,7 +81,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("POLL_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v + "s"); err == nil {
-			cfg.PollInterval = d
+			// 0/负数能通过 ParseDuration，但会让 time.NewTicker panic
+			if d <= 0 {
+				log.Printf("WARNING: POLL_INTERVAL=%q must be > 0, using default %v", v, cfg.PollInterval)
+			} else {
+				cfg.PollInterval = d
+			}
 		} else {
 			log.Printf("WARNING: invalid POLL_INTERVAL=%q, using default %v", v, cfg.PollInterval)
 		}
@@ -103,9 +108,15 @@ type collectLoop struct {
 	credsNotified   bool
 	gameNotified    bool
 	notInGameLogged bool
+	// 抓取失败降噪：连续失败次数与上次打日志的时间
+	fetchErrors      int
+	fetchErrorLogged time.Time
 	// 零值 → 游戏开始后首个 tick 必发一帧 state，让 Agent 立即拿到快照
 	lastStateSent time.Time
 }
+
+// fetchErrorLogInterval 控制 fetch 失败日志的降噪节奏。
+const fetchErrorLogInterval = 10 * time.Second
 
 // ensureCredentials 确保 live client 凭据可用，返回 false 表示本 tick 应跳过。
 func (l *collectLoop) ensureCredentials() bool {
@@ -140,10 +151,15 @@ func (l *collectLoop) fetchState(ctx context.Context) (*lol.GameState, bool) {
 			}
 			return nil, false
 		}
-		log.Printf("fetch state error: %v", err)
+		// 抓取失败（401/超时）与"未开游戏"分开：前者需要降噪，
+		// 否则一次持续故障每秒一行错误会淹没日志
 		l.engine.Reset()
+		l.logFetchError(err)
 		return nil, false
 	}
+
+	l.fetchErrors = 0
+	l.fetchErrorLogged = time.Time{}
 
 	if !l.gameNotified {
 		l.gameNotified = true
@@ -153,27 +169,63 @@ func (l *collectLoop) fetchState(ctx context.Context) (*lol.GameState, bool) {
 	return state, true
 }
 
+// logFetchError 报告连续抓取失败：第一条立即打，之后按 fetchErrorLogInterval
+// 降噪（401 刷屏/网络抖动期间最多每 10s 一行）。
+func (l *collectLoop) logFetchError(err error) {
+	l.fetchErrors++
+	switch {
+	case l.fetchErrors == 1:
+		l.fetchErrorLogged = time.Now()
+		log.Printf("fetch state error: %v (retrying; repeated failures are logged every %s)",
+			err, fetchErrorLogInterval)
+	case time.Since(l.fetchErrorLogged) >= fetchErrorLogInterval:
+		l.fetchErrorLogged = time.Now()
+		log.Printf("fetch state error: %v (%d consecutive failures)", err, l.fetchErrors)
+	}
+}
+
 // publish 处理事件检测并按事件驱动 + 心跳策略发送 state / events。
 func (l *collectLoop) publish(state *lol.GameState) error {
 	state.MergeActivePlayer()
 	events := l.engine.Process(state)
 
+	// Events 携带整局事件历史（30 分钟局单帧 100KB+），而 Agent 每帧都全量校验
+	// 并写 Redis。发出去的帧不含它：omitempty + 显式置 nil。
+	// 这里用浅拷贝而不是原地置 nil —— detector 通过 lastState 持有同一个
+	// *GameState（虽然当前只读 GameTime），清空原值会让那条隐式契约失效。
+	out := *state
+	out.Events = nil
+
+	var firstErr error
+	fail := func(err error) {
+		// 记录首个 error，剩余的发送继续执行
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	// 事件驱动发送：有事件时 state 随事件一起发（state 是事件的上下文）；
 	// 无事件时仅靠心跳刷新，避免每秒全量推送（一局 ~1800 条冗余消息）
 	if len(events) > 0 || time.Since(l.lastStateSent) >= stateHeartbeat {
-		if err := l.ws.SendState(state); err != nil {
-			return err
+		// state 必须先于同 tick 的事件：Agent 侧的 dragon_timer 时效性判断
+		// 依赖快照先于引用它的事件到达。
+		// SendState 失败不能 early-return，否则本 tick 检出的事件既没发出
+		// 也没进 ring buffer（send 失败即入 buffer 的路径被跳过），永久丢失。
+		if err := l.ws.SendState(&out); err != nil {
+			fail(err)
+		} else {
+			l.lastStateSent = time.Now()
 		}
-		l.lastStateSent = time.Now()
 	}
 
 	for _, ev := range events {
 		if err := l.ws.SendEvent(ev); err != nil {
-			return err
+			fail(err)
+			continue // 断线时后续事件也必须继续入 ring buffer
 		}
 		log.Printf("event: %s", ev.Name)
 	}
-	return nil
+	return firstErr
 }
 
 // tick 执行单次采集：凭据检查 → 拉取状态 → 发送。
@@ -189,6 +241,10 @@ func (l *collectLoop) tick(ctx context.Context) error {
 }
 
 func runLoop(ctx context.Context, client *lol.Client, engine *event.Engine, ws *sender.WebSocket, interval time.Duration) error {
+	// 兜底：POLL_INTERVAL 即使绕过校验也不能让 NewTicker panic
+	if interval <= 0 {
+		interval = time.Second
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 

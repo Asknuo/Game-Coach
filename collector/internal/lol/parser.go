@@ -10,7 +10,7 @@ type GameState struct {
 	GameTime     float64         `json:"game_time"`
 	ActivePlayer ActivePlayer    `json:"active_player"`
 	AllPlayers   []Player        `json:"all_players"`
-	Events       []GameEvent     `json:"events"`
+	Events       []GameEvent     `json:"events,omitempty"`
 	DragonTimer  *DragonInfo     `json:"dragon_timer,omitempty"`
 	BaronTimer   *BaronInfo      `json:"baron_timer,omitempty"`
 	CollectedAt  time.Time       `json:"collected_at"`
