@@ -43,6 +43,9 @@ chroma_data/
 agent/memory/data/
 agent/chroma_data/
 
+# ── 工具缓存 ──
+.ruff_cache/
+
 # ── IDE ──
 .idea/
 .vscode/

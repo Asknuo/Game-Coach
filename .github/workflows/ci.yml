@@ -20,8 +20,10 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: go vet
         run: go vet ./...
-      - name: go test
-        run: go test ./...
+      # -race：本次 bugfix 的并发问题（writeMu 阻塞、connected 非原子、
+      # Engine.Reset 锁不对称）只有竞态检测器能发现，普通测试全盲
+      - name: go test (race)
+        run: go test -race ./...
 
   agent:
     runs-on: ubuntu-latest
@@ -38,4 +40,23 @@ jobs:
         run: ruff check agent
       - name: Pytest
         working-directory: agent
+        run: python -m pytest tests -q
+
+  voice:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: voice/requirements.txt
+      # pywin32 仅 Windows 可用且 SAPI 路径由假 COM 测试覆盖——
+      # CI（Linux）不装它，回退路径照样被测到
+      - name: Install dependencies
+        run: pip install "websockets>=13.0" pytest pytest-asyncio ruff
+      - name: Ruff lint
+        run: ruff check voice
+      - name: Pytest
+        working-directory: voice
         run: python -m pytest tests -q
