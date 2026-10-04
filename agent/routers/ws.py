@@ -50,5 +50,20 @@ async def overlay_ws(websocket: WebSocket):
 @router.websocket("/ws/collector")
 async def collector_ws(websocket: WebSocket):
     await websocket.accept()
+    ctx = _ctx(websocket)
+    # 单飞：多采集器并发会让两个会话交替覆盖同一份 state/记忆
+    # （session_id 全程是 "default"）。重连时序靠 collector 的断线
+    # 重连保证——旧会话收到 disconnect 才会退出，新连接理应看不到旧会话
+    active = getattr(ctx, "collector_session", None)
+    if active is not None and not active._ws_closed():
+        logger.warning("second collector connection rejected — one active session is enough")
+        await websocket.close(code=1008)  # policy violation
+        return
     logger.info("collector connected (langgraph pipeline)")
-    await CollectorSession(websocket, _ctx(websocket)).run()
+    session = CollectorSession(websocket, ctx)
+    ctx.collector_session = session
+    try:
+        await session.run()
+    finally:
+        if getattr(ctx, "collector_session", None) is session:
+            ctx.collector_session = None

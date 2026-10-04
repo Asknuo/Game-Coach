@@ -55,7 +55,7 @@ _STATIC_QUERY_EVENTS = (
 )
 
 
-def _warmup_sync(retriever: "Retriever") -> None:
+def _warmup_sync(retriever: Retriever) -> None:
     """同步预热主体（线程池里执行，与 embed_query 复用同一 LRU）."""
     from graph.nodes.routing import _build_rag_query
 
@@ -156,17 +156,23 @@ async def review_on_disconnect(ctx: AppContext, state: GameState) -> None:
         logger.info("[review] %s", tip["message"][:120])
 
 
-async def summarize_on_disconnect(ctx: AppContext, state: GameState | None) -> None:
+async def summarize_on_disconnect(
+    ctx: AppContext, state: GameState | None, skip_review: bool = False,
+) -> None:
     if not state or state.game_time <= 120:
         return
 
     ap = state.active_player
 
-    # 1. review skill 流水线（LLM 复盘 → overlay 广播）
-    try:
-        await review_on_disconnect(ctx, state)
-    except Exception:
-        logger.exception("Review on disconnect failed")
+    # 1. review skill 流水线（LLM 复盘 → overlay 广播）。
+    # game_end 事件已走过流水线产出 review tip 时跳过，避免一局复盘两次 LLM 调用
+    if not skip_review:
+        try:
+            await review_on_disconnect(ctx, state)
+        except Exception:
+            logger.exception("Review on disconnect failed")
+    else:
+        logger.info("review tip already published via game_end pipeline — skipping")
 
     # 2. 结构化摘要沉淀到 history + facts（带真实 KDA）
     summary = {
