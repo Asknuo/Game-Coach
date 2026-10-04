@@ -75,6 +75,11 @@ class OpenAIClient:
 
     # ── 异步客户端（懒加载） ──
 
+    def is_available(self) -> bool:
+        """是否具备调用条件（有 API key）。断路器状态不在此判定——
+        打开时调用照常发起并快速失败，交由 achat/apolish 统一返回降级值."""
+        return bool(self.api_key)
+
     def _get_async_client(self) -> AsyncOpenAI | None:
         if not self.api_key:
             return None
@@ -86,6 +91,15 @@ class OpenAIClient:
                 max_retries=0,
             )
         return self._aclient
+
+    async def aclose(self) -> None:
+        """关闭底层 httpx 连接池（ lifespan 关闭时调用，避免 unclosed-session 泄漏）."""
+        if self._aclient is not None:
+            try:
+                await self._aclient.close()
+            except Exception:
+                logger.debug("AsyncOpenAI close failed", exc_info=True)
+            self._aclient = None
 
     # ── 异步链路（不阻塞事件循环） ──
 
@@ -124,21 +138,23 @@ class OpenAIClient:
                            temperature: float = 0.7):
         """流式 LLM 调用：逐块 yield 增量文本.
 
-        断路器语义同 achat；流式中途失败不重试（已产出的增量由调用方
-        决定去留——tip 链路会拼接为部分文本），正常结束记 success.
+        断路器语义同 achat；流式中途失败不重试，已产出的增量由调用方
+        决定去留（tip 链路保留部分文本并与落锤对齐）。中断时异常向上抛——
+        静默返回空 pieces 会让调用方无法区分"API 故障"与"模型返回空"。
+        正常结束记 success。
         """
         aclient = self._get_async_client()
         if not aclient or self._breaker.is_open():
             return
 
+        stream = await aclient.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=True,
+        )
         try:
-            stream = await aclient.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                stream=True,
-            )
             async for chunk in stream:
                 if chunk.choices:
                     delta = chunk.choices[0].delta
@@ -146,8 +162,16 @@ class OpenAIClient:
                         yield delta.content
             self._breaker.record_success()
         except Exception:
-            logger.exception("achat_stream failed")
             self._breaker.record_failure()
+            raise
+        finally:
+            # 中途异常/取消时显式关闭底层 HTTP 响应，不能只等 GC
+            close = getattr(stream, "close", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    logger.debug("stream close failed", exc_info=True)
 
     # ── Prompt 构建（同步/异步共用） ──
 

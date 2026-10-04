@@ -69,6 +69,7 @@ def _coach_state(event_name, event_data=None, game_state=None, priority=1, **ove
         "skill_context": "",
         "skill_gotchas": "",
         "polished_message": "polished",
+        "tip_id": "",
         "should_publish": False,
         "skip_reason": "",
         "tip": None,
@@ -107,6 +108,14 @@ class TestDetectSignals:
         assert out["is_valid"] is False
         assert out["skip_reason"] == "player_dead"
 
+    def test_death_event_passes_death_filter(self):
+        """回归：death 自身必须穿透死亡过滤——survival skill 的复活期
+        建议依赖它（SKILL.md events 声明），曾被 session/图内双重吞掉."""
+        gs = _game_state(hp=0, max_hp=1000)
+        out = _nodes().detect_signals(_coach_state("death", game_state=gs))
+        assert out["is_valid"] is True
+        assert "player_died" in out["signals"]
+
     def test_dead_player_still_gets_dragon_event(self):
         gs = _game_state(hp=0, max_hp=1000)
         out = _nodes().detect_signals(_coach_state(
@@ -142,6 +151,32 @@ class TestValidate:
         fake = FakeRedisStore()
         out = await _nodes(fake).validate(_coach_state("low_health"))
         assert out["should_publish"] is True
+
+    @pytest.mark.asyncio
+    async def test_reject_emits_tip_cancel(self):
+        """回归：validate 拒发必须撤回流式卡片（tip_id 关联）."""
+        cancelled: list[tuple[str, str]] = []
+
+        async def cancel(tip_id, skill):
+            cancelled.append((tip_id, skill))
+
+        nodes = GraphNodes(GraphDeps(redis_store=FakeRedisStore(confidence=0.6),
+                                     on_tip_cancel=cancel))
+        out = await nodes.validate(_coach_state("low_health", skill_name="survival",
+                                                tip_id="test:low_health:1"))
+        assert out["should_publish"] is False
+        assert cancelled and cancelled[0][1] == "survival"
+
+    @pytest.mark.asyncio
+    async def test_pass_emits_no_cancel(self):
+        nodes = GraphNodes(GraphDeps(redis_store=FakeRedisStore(),
+                                     on_tip_cancel=_boom_cancel))
+        out = await nodes.validate(_coach_state("low_health"))
+        assert out["should_publish"] is True
+
+
+async def _boom_cancel(tip_id, skill):
+    raise AssertionError("放行时不应触发撤回")
 
 
 # ── publish ───────────────────────────────────────────
@@ -235,13 +270,13 @@ from types import SimpleNamespace  # noqa: E402
 
 
 class FakeStreamLLM:
-    """流式桩：_get_async_client 真值，apolish_stream 逐块吐给定增量."""
+    """流式桩：is_available 真值，apolish_stream 逐块吐给定增量."""
 
     def __init__(self, chunks):
         self._chunks = chunks
 
-    def _get_async_client(self):
-        return object()
+    def is_available(self):
+        return True
 
     async def apolish_stream(self, tip, snapshot, rag_context=None):
         for c in self._chunks:
@@ -260,8 +295,8 @@ class TestLLMPolish:
         """未注入 emitter → 走非流式 apolish，取返回 message（与原行为一致）."""
 
         class FakePolishLLM:
-            def _get_async_client(self):
-                return object()
+            def is_available(self):
+                return True
 
             async def apolish(self, tip, snapshot, rag_context=None):
                 return SimpleNamespace(message="润色结果")
@@ -273,10 +308,10 @@ class TestLLMPolish:
     @pytest.mark.asyncio
     async def test_stream_emits_accumulated_text(self):
         """流式分支：首块即时推送，结束推全文，polished_message 为拼接结果."""
-        emitted: list[str] = []
+        emitted: list[tuple[str, str]] = []
 
-        async def emitter(tip, text):
-            emitted.append(text)
+        async def emitter(tip, text, tip_id):
+            emitted.append((text, tip_id))
 
         nodes = GraphNodes(GraphDeps(
             llm=FakeStreamLLM(["快撤", "回城补给", "再上线"]),
@@ -285,15 +320,18 @@ class TestLLMPolish:
         out = await nodes.llm_polish(_coach_state("low_health"))
 
         assert out["polished_message"] == "快撤回城补给再上线"
-        assert emitted[0] == "快撤"                   # 首块不等节流，overlay 立即可见
-        assert emitted[-1] == "快撤回城补给再上线"      # 落锤前推完整文本
+        assert emitted[0][0] == "快撤"                 # 首块不等节流，overlay 立即可见
+        assert emitted[-1][0] == "快撤回城补给再上线"    # 落锤前推完整文本
+        # 同一 tip_id 贯穿全部增量与状态，供撤回/关联
+        assert out["tip_id"]
+        assert all(tid == out["tip_id"] for _, tid in emitted)
 
     @pytest.mark.asyncio
     async def test_stream_empty_falls_back_to_draft(self):
         """流式无任何输出 → 回退草稿，不做推送."""
         emitted: list[str] = []
 
-        async def emitter(tip, text):
+        async def emitter(tip, text, tip_id):
             emitted.append(text)
 
         nodes = GraphNodes(GraphDeps(llm=FakeStreamLLM([]), on_polish_delta=emitter))
@@ -305,10 +343,31 @@ class TestLLMPolish:
     async def test_emitter_failure_does_not_break_polish(self):
         """overlay 推送失败不中断润色——文本仍然完整产出."""
 
-        async def bad_emitter(tip, text):
+        async def bad_emitter(tip, text, tip_id):
             raise RuntimeError("overlay gone")
 
         nodes = GraphNodes(GraphDeps(
             llm=FakeStreamLLM(["块1", "块2"]), on_polish_delta=bad_emitter))
         out = await nodes.llm_polish(_coach_state("low_health"))
         assert out["polished_message"] == "块1块2"
+
+    @pytest.mark.asyncio
+    async def test_stream_mid_failure_keeps_partial_text(self):
+        """流中断已产出部分文本 → 保留部分（与 overlay 已显示内容一致），不回退草稿."""
+
+        class InterruptedStreamLLM(FakeStreamLLM):
+            async def apolish_stream(self, tip, snapshot, rag_context=None):
+                for c in self._chunks:
+                    yield c
+                raise ConnectionError("stream reset")
+
+        emitted: list[str] = []
+
+        async def emitter(tip, text, tip_id):
+            emitted.append(text)
+
+        nodes = GraphNodes(GraphDeps(
+            llm=InterruptedStreamLLM(["先撤", "再打"]), on_polish_delta=emitter))
+        out = await nodes.llm_polish(_coach_state("low_health"))
+        assert out["polished_message"] == "先撤再打"
+        assert emitted[-1] == "先撤再打"  # 最终 emit 与落锤文本一致

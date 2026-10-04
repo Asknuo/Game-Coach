@@ -30,5 +30,7 @@ class GraphDeps:
     injector: MemoryInjector | None = None
     redis_store: RedisStore | None = None
     memory: PlayerMemory | None = None
-    # 流式润色增量回调：(tip, 累计文本) → 推送 overlay；None = 走非流式 apolish
-    on_polish_delta: Callable[[CoachingTip, str], Awaitable[None]] | None = None
+    # 流式润色增量回调：(tip, 累计文本, tip_id) → 推送 overlay；None = 走非流式 apolish
+    on_polish_delta: Callable[[CoachingTip, str, str], Awaitable[None]] | None = None
+    # 流式卡片撤回回调：(tip_id, skill) → validate/publish 拒发时通知 overlay 清理
+    on_tip_cancel: Callable[[str, str], Awaitable[None]] | None = None

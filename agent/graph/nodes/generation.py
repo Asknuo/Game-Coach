@@ -1,11 +1,15 @@
 """生成阶段节点 — inject_memory / llm_polish."""
 
+import itertools
 import logging
 import time
 
 from graph.state import CoachState
 
 logger = logging.getLogger(__name__)
+
+# 进程内自增：tip_id = session:event:seq，用于关联流式增量、权威 tip 与撤回消息
+_tip_seq = itertools.count(1)
 
 
 class GenerationMixin:
@@ -28,10 +32,13 @@ class GenerationMixin:
     async def llm_polish(self, state: CoachState) -> CoachState:
         """调用 LLM 润色教练建议，注入 SKILL.md 上下文 + 坑点清单."""
         llm = self.deps.llm
-        if not llm or not llm._get_async_client():
+        if not llm or not llm.is_available():
             return {**state, "polished_message": state["skill_message"]}
 
         from models.state import CoachingTip, GameState
+
+        # 每条流水线生成唯一 tip_id：validate/publish 拒发时据此撤回流式卡片
+        tip_id = f"{state.get('session_id', 'default')}:{state.get('event_name', '?')}:{next(_tip_seq)}"
 
         tip = CoachingTip(
             skill=state["skill_name"],
@@ -71,20 +78,26 @@ class GenerationMixin:
             if emitter:
                 # 流式：增量实时推送 overlay（0.1s 节流，避免逐 token 洪泛）。
                 # 最终完整文本再推一次，随后 session 层的权威 tip 消息落锤。
+                # 流中断时保留已产出部分——overlay 上已显示的内容必须与最终
+                # 落锤文本一致，不能回退到观众没见过的草稿。
                 pieces: list[str] = []
                 last_emit = 0.0
-                async for delta in llm.apolish_stream(tip, snapshot, rag_context=rag_ctx):
-                    pieces.append(delta)
-                    now = time.monotonic()
-                    if now - last_emit >= 0.1:
-                        last_emit = now
-                        try:
-                            await emitter(tip, "".join(pieces))
-                        except Exception:
-                            logger.exception("polish delta emit failed")
+                try:
+                    async for delta in llm.apolish_stream(tip, snapshot, rag_context=rag_ctx):
+                        pieces.append(delta)
+                        now = time.monotonic()
+                        if now - last_emit >= 0.1:
+                            last_emit = now
+                            try:
+                                await emitter(tip, "".join(pieces), tip_id)
+                            except Exception:
+                                logger.exception("polish delta emit failed")
+                except Exception:
+                    # 流中断（网络/API 故障）：保留部分产出，交由最终 emit 对齐
+                    logger.exception("polish stream interrupted — keeping partial text")
                 if pieces:
                     try:
-                        await emitter(tip, "".join(pieces))
+                        await emitter(tip, "".join(pieces), tip_id)
                     except Exception:
                         logger.exception("polish final emit failed")
                 text = "".join(pieces).strip()
@@ -98,4 +111,5 @@ class GenerationMixin:
             logger.exception("llm_polish failed")
             state["polished_message"] = state["skill_message"]
 
+        state["tip_id"] = tip_id
         return state

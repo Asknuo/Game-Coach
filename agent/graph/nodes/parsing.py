@@ -2,7 +2,7 @@
 
 import logging
 
-from graph.nodes.common import OBJECTIVE_EVENTS, hp_pct, is_in_fountain
+from graph.nodes.common import DEAD_PASSTHROUGH_EVENTS, OBJECTIVE_EVENTS, hp_pct, is_in_fountain
 from graph.state import CoachState
 
 logger = logging.getLogger(__name__)
@@ -65,8 +65,9 @@ class ParsingMixin:
         active = gs.get("active_player", {}) if gs else {}
         hp = hp_pct(active)
 
-        # 死亡时跳过非龙/大龙事件
-        if hp == 0 and name not in OBJECTIVE_EVENTS:
+        # 死亡时跳过无关事件；目标类（龙/大龙）与 death 自身必须放行——
+        # survival 的复活期建议依赖 death（SKILL.md events 声明）
+        if hp == 0 and name not in DEAD_PASSTHROUGH_EVENTS:
             logger.debug("detect_signals: skip (dead) %s", name)
             return {**state, "is_valid": False, "skip_reason": "player_dead"}
 

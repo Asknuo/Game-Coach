@@ -43,6 +43,23 @@ def _tip_stale_reason(
 class ValidationMixin:
     """去重验证与发布节点（依赖 redis_store，缺失时直接放行）."""
 
+    async def _cancel_stream(self, state: CoachState, reason: str) -> None:
+        """validate/publish 拒发时撤回流式卡片.
+
+        llm_polish 早已把增量推给 overlay；没有权威 tip 落锤时，
+        客户端需要一条 tip_cancel 来清理孤儿卡片（协议见 README）。
+        """
+        tip_id = state.get("tip_id", "")
+        if not tip_id:
+            return
+        cancel = self.deps.on_tip_cancel
+        if not cancel:
+            return
+        try:
+            await cancel(tip_id, state.get("skill_name", ""))
+        except Exception:
+            logger.exception("tip_cancel emit failed for %s", tip_id)
+
     async def validate(self, state: CoachState) -> CoachState:
         """去重 + 置信度检查，决定是否发布.
 
@@ -53,6 +70,7 @@ class ValidationMixin:
         skill = state["skill_name"]
 
         if not skill:
+            await self._cancel_stream(state, "no_skill")
             return {**state, "should_publish": False, "skip_reason": "no_skill"}
 
         if redis:
@@ -60,10 +78,12 @@ class ValidationMixin:
             conf = await redis.get_skill_confidence(state["session_id"], skill)
             if conf < MIN_CONFIDENCE_TO_PUBLISH:
                 logger.info("validate: skill=%s muted by low confidence %.2f", skill, conf)
+                await self._cancel_stream(state, "low_confidence")
                 return {**state, "should_publish": False, "skip_reason": "low_confidence"}
 
             if await redis.was_tip_recently_sent(state["session_id"], skill):
                 logger.debug("validate: duplicate skill=%s", skill)
+                await self._cancel_stream(state, "duplicate")
                 return {**state, "should_publish": False, "skip_reason": "duplicate"}
 
         return {**state, "should_publish": True, "skip_reason": ""}
@@ -88,6 +108,7 @@ class ValidationMixin:
             reason = _tip_stale_reason(event_name, event_data, gs, latest is not None)
             if reason:
                 logger.debug("publish: skip %s (%s)", event_name, reason)
+                await self._cancel_stream(state, reason)
                 return {**state, "should_publish": False, "skip_reason": reason}
 
         if redis:
@@ -104,6 +125,7 @@ class ValidationMixin:
             "skill": state["skill_name"],
             "message": state["polished_message"],
             "priority": state["priority"],
+            "tip_id": state.get("tip_id", ""),
         }
         logger.info("[%s] %s", state["skill_name"], state["polished_message"][:80])
         return state

@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from game.zones import get_active_zone, get_enemy_zones
+from graph.nodes.common import DEAD_PASSTHROUGH_EVENTS
 from models.state import CoachEvent, GameState
 from planner.planner import EVENT_TO_SKILL, SKILL_REGISTRY
 
@@ -53,12 +54,14 @@ def event_priority(event: CoachEvent) -> int:
 def should_skip_dead_event(state: GameState | None, event: CoachEvent) -> bool:
     if not state:
         return False
-    if event.name in ("dragon_soon", "baron_soon"):
+    # 目标类与 death 自身穿透：龙/大龙与生死无关；death 是 survival
+    # 复活期建议的触发源（曾被此处吞掉，见 BUGFIX.md）
+    if event.name in DEAD_PASSTHROUGH_EVENTS:
         return False
     return state.active_player_health_pct() == 0
 
 
-def handle_lcu_event(ctx: AppContext, event: CoachEvent) -> bool:
+async def handle_lcu_event(ctx: AppContext, event: CoachEvent) -> bool:
     """处理 LCU 大厅事件：符文/熟练度/选人等写入记忆上下文，供注入 LLM.
 
     返回 True 表示该事件已被消费（不再进入 coaching 流水线）。
@@ -66,6 +69,10 @@ def handle_lcu_event(ctx: AppContext, event: CoachEvent) -> bool:
     memory = ctx.memory
     name = event.name
     if name == "lcu_game_start":
+        # 新一局开始：清掉上一局的会话级状态——Redis 的 tip 冷却与
+        # conf:*（TTL 24h）会让新局前几分钟的建议被静音；top_of_mind 与
+        # 对局期上下文也是上一局的残留
+        await _reset_session_state(ctx)
         data = event.data
         runes = data.get("runes") or {}
         if runes:
@@ -75,7 +82,7 @@ def handle_lcu_event(ctx: AppContext, event: CoachEvent) -> bool:
             memory.user.context["top_masteries"] = masteries[:5]
         if data.get("summoner_name"):
             memory.user.context["summoner_name"] = data["summoner_name"]
-        logger.info("LCU game start context: runes=%d, masteries=%d",
+        logger.info("LCU game start context: runes=%d, masteries=%d (session reset)",
                     len(runes.get("perk_ids", [])), len(masteries))
         return True
 
@@ -89,6 +96,26 @@ def handle_lcu_event(ctx: AppContext, event: CoachEvent) -> bool:
         return True
 
     return False
+
+
+async def _reset_session_state(ctx: AppContext) -> None:
+    """重置会话级状态：Redis 去重/冷却/置信度/state + 进程内对局期记忆."""
+    redis_store = getattr(ctx, "redis_store", None)
+    if redis_store is not None:
+        try:
+            await redis_store.reset_session("default")
+        except Exception:
+            logger.exception("session reset failed (redis)")
+
+    memory = ctx.memory
+    memory.user.top_of_mind.clear()
+    for key in ("current_zone", "enemy_zones", "runes", "top_masteries",
+                "assigned_position", "champion_id", "summoner_name"):
+        memory.user.context.pop(key, None)
+
+    metrics = getattr(ctx, "metrics", None)
+    if metrics is not None:
+        metrics["session_resets"] = metrics.get("session_resets", 0) + 1
 
 
 def update_memory_from_state(ctx: AppContext, state: GameState, payload: dict) -> None:

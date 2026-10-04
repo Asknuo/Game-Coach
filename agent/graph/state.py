@@ -44,6 +44,7 @@ class CoachState(TypedDict):
 
     # ── Generation（llm_polish） ──
     polished_message: str              # LLM 润色后文本
+    tip_id: str                        # 流式增量/权威 tip/撤回消息的关联 id
 
     # ── Validation（validate） ──
     should_publish: bool               # True = 发送, False = 跳过
@@ -78,6 +79,7 @@ def build_initial_state(
         "rag_docs": [],
         "memory_context": "",
         "polished_message": "",
+        "tip_id": "",
         "should_publish": False,
         "skip_reason": "",
         "tip": None,

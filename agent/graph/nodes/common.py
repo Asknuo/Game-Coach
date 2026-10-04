@@ -1,7 +1,9 @@
 """节点共享的纯函数工具."""
 
-# 死亡时仍需推送的目标类事件
+# 死亡时仍需推送的事件：目标类（龙/大龙与生死无关）+
+# death 自身（survival skill 的复活期建议依赖它，见 SKILL.md events 声明）
 OBJECTIVE_EVENTS = ("dragon_soon", "baron_soon")
+DEAD_PASSTHROUGH_EVENTS = ("dragon_soon", "baron_soon", "death")
 
 
 def hp_pct(active: dict) -> float:
