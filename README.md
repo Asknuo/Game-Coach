@@ -531,14 +531,19 @@ skills/{skill_name}/
 |------|------|------|
 | `state` | Collector → Agent | 完整游戏状态（事件驱动：有事件时随事件发送；无事件时每 20s 心跳一帧） |
 | `event` | Collector → Agent | 检测到的事件 |
-| `tip` | Agent → Collector / Overlay | 教练建议（LangGraph 流水线输出） |
-| `tip_stream` | Agent → Overlay | 流式润色增量（payload.message 为**累计文本**；随后必有权威 `tip` 落锤，客户端可忽略以保持旧行为） |
+| `tip` | Agent → Collector / Overlay | 教练建议（LangGraph 流水线输出，payload 含 `tip_id`） |
+| `tip_stream` | Agent → Overlay | 流式润色增量（payload.message 为**累计文本**，含 `tip_id`） |
+| `tip_cancel` | Agent → Overlay | 撤回早于 validate/publish 发出的流式卡片（按 `tip_id` 清理，不会误伤定稿卡片） |
 | `ping` | Overlay → Agent | 心跳保活（Agent 忽略，不断开连接） |
 
-> **流式润色协议**：`llm_polish` 节点以约 0.1s 节流推送 `tip_stream`，payload 结构与 `tip`
-> 一致（`skill` / `priority` / `message`），其中 `message` 是到当前为止的累计文本。
-> 建议客户端行为：收到首个 `tip_stream` 即渲染卡片并随消息更新文本；收到同 skill 的
-> `tip` 后以 `tip` 为准（内容一致）。voice 客户端只消费 `type == "tip"`，不受影响。
+> **流式润色协议**：`llm_polish` 节点以约 0.1s 节流推送 `tip_stream`，payload 结构为
+> `{skill, priority, message, tip_id}`，其中 `message` 是到当前为止的累计文本。
+> 若该 tip 随后被 validate（重复/低置信度）或 publish（血量恢复/目标已出生/装备已卖）
+> 拒绝，Agent 会补发一条 `tip_cancel {tip_id, skill}`，客户端据此丢弃对应卡片——
+> 没有 `tip_id` 关联时并发流式卡片会互相错盖，孤儿卡片会永久停在屏幕上。
+> 客户端行为：收到 `tip_stream` 按 `tip_id` 渲染/更新卡片；收到同 `tip_id` 的 `tip`
+> 后以 `tip` 为准落锤；收到 `tip_cancel` 移除该卡片。voice 客户端只消费 `type == "tip"`，
+> 不受影响。
 
 ---
 
@@ -658,7 +663,9 @@ Collector 连接后，Agent 日志实时输出每条 coaching tip：
 
 `/ws/overlay` 是通用广播端点：Agent 发布的每条 tip 都会推送给所有已连接的
 overlay 客户端（如浏览器 Overlay 页面），可用于自定义前端展示或语音播报。
-客户端每 15 秒发送 `{"type":"ping"}` 心跳保活即可保持连接。
+客户端每 15 秒发送 `{"type":"ping"}` 心跳保活即可保持连接；注意这是**单向**
+应用层心跳——笔记本休眠/切网造成的半开连接不会被它发现，voice 客户端因此
+改用 WebSocket 协议级 keepalive（`ping_interval=20, ping_timeout=20`）检测死链。
 
 ### 3. 语音播报（Windows TTS）
 
@@ -730,5 +737,6 @@ Agent 启动时自动扫描并注册，无需修改任何代码。
 - 无对局时 Collector 会等待并重试
 - LLM 调用失败时 Agent fallback 到 skill 模板文本
 - PlayerMemory 在 Agent 关闭时自动持久化到 `agent/memory_data/`
-- 对局断开（游戏时间 ≥ 120s）时自动生成对局摘要
-- `pyyaml>=6.0` 是 yarn frontmatter 解析的必要依赖
+- 对局摘要仅在收到 `game_end`（LCU EndOfGame）后的断连时生成——网络抖动
+  造成的断连只做轻量清理，不写对局记录、不跑复盘（见 BUGFIX.md）
+- `pyyaml>=6.0` 是 yaml frontmatter 解析的必要依赖
