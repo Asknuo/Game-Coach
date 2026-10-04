@@ -76,6 +76,16 @@ class Embedder:
         else:
             return self._embed_openai(texts)
 
+    def close(self) -> None:
+        """关闭同步 OpenAI 客户端连接池（lifespan 关闭时调用）."""
+        client = self._client
+        self._client = None
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                logger.debug("Embedder client close failed", exc_info=True)
+
     def _cache_get(self, text: str) -> list[float] | None:
         """LRU 读：命中时把 key 移到队尾（最近使用）。"""
         cache = self._query_cache

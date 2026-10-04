@@ -17,6 +17,7 @@ def _ctx(request: Request) -> AppContext:
 async def health(request: Request):
     ctx = _ctx(request)
     memory = ctx.memory
+    breaker = ctx.llm._breaker
     return {
         "status": "ok",
         "service": "game-coach-agent",
@@ -24,6 +25,12 @@ async def health(request: Request):
         "memory": {
             "facts": len(memory.facts),
             "games": len(memory.history.recent_games),
+        },
+        "runtime": {
+            "overlay_clients": len(ctx.overlay_clients),
+            "queue_depth": ctx.queue.pending_count,
+            "llm_circuit_open": breaker.is_open(),
+            "llm_failures": breaker._failures,
         },
         "metrics": ctx.metrics,
     }

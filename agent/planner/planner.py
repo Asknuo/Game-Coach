@@ -7,7 +7,7 @@
 import logging
 import os
 from collections.abc import Callable
-from functools import lru_cache
+from functools import cache
 
 import yaml
 
@@ -20,6 +20,18 @@ SKILLS_DIR = os.path.join(os.path.dirname(__file__), "..", "skills")
 EventMessageBuilder = Callable[[CoachEvent, GameState | None, dict], str]
 
 
+def _num(data: dict, key: str, default: float) -> float:
+    """安全取数：event.data 来自 Go 侧 map[string]interface{} 反序列化，
+    零校验直接 :.0f 格式化会让一个字符串/null 字段炸掉整条图（route_skill
+    抛异常 → 整个 tip 丢失）。不可转换时退默认值并降级为通用文案。"""
+    value = data.get(key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logger.warning("event data %r=%r 非数值，使用默认 %s", key, value, default)
+        return float(default)
+
+
 def _base_low_health(_event: CoachEvent, state: GameState | None, _data: dict) -> str:
     hp = state.active_player_health_pct() if state else None
     hp_str = f"（{hp:.0f}% HP）" if hp is not None else ""
@@ -27,12 +39,12 @@ def _base_low_health(_event: CoachEvent, state: GameState | None, _data: dict) -
 
 
 def _base_dragon_soon(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
-    sec = data.get("seconds_left", 30)
+    sec = _num(data, "seconds_left", 30)
     return f"小龙 {sec:.0f} 秒后刷新——提前布置视野和站位。"
 
 
 def _base_baron_soon(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
-    sec = data.get("seconds_left", 30)
+    sec = _num(data, "seconds_left", 30)
     return f"大龙 {sec:.0f} 秒后刷新——布置视野，不要贸然开龙。"
 
 
@@ -67,8 +79,8 @@ def _base_enemy_item_sold(_event: CoachEvent, _state: GameState | None, data: di
 
 def _base_enemy_gold_lead(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
     enemy_champ = data.get("enemy_champion", "敌方")
-    gap = data.get("gold_gap", 0)
-    kills = data.get("enemy_kills", 0)
+    gap = _num(data, "gold_gap", 0)
+    kills = _num(data, "enemy_kills", 0)
     return (
         f"敌方 {enemy_champ} 领先 {gap:.0f} 经济（{kills} 击杀）"
         f"——避免单挑，稳住并呼叫打野。"
@@ -77,7 +89,7 @@ def _base_enemy_gold_lead(_event: CoachEvent, _state: GameState | None, data: di
 
 def _base_enemy_fed(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
     enemy_champ = data.get("enemy_champion", "敌方")
-    kills = data.get("kills", 0)
+    kills = _num(data, "kills", 0)
     return (
         f"敌方已起飞：{enemy_champ} 已 {kills} 杀"
         f"——优先集火终结，抱团围剿。"
@@ -85,11 +97,11 @@ def _base_enemy_fed(_event: CoachEvent, _state: GameState | None, data: dict) ->
 
 
 def _base_gold_spike(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
-    return f"经济突增（{data.get('delta', 0):.0f} 金）——考虑下一次购买。"
+    return f"经济突增（{_num(data, 'delta', 0):.0f} 金）——考虑下一次购买。"
 
 
 def _base_kill(_event: CoachEvent, _state: GameState | None, data: dict) -> str:
-    kills = data.get("total_kills", 1)
+    kills = _num(data, "total_kills", 1)
     return f"击杀到手（总 {kills} 杀）——利用人数优势扩大战果。"
 
 
@@ -239,7 +251,7 @@ def get_skill_context(skill_name: str) -> str:
     return meta.get("_body", "")
 
 
-@lru_cache(maxsize=None)  # skill 文件是静态的，进程内缓存即可
+@cache  # skill 文件是静态的，进程内缓存即可
 def get_skill_gotchas(skill_name: str) -> str:
     """获取某个 skill 的 gotchas.md 内容."""
     path = os.path.join(SKILLS_DIR, skill_name, "gotchas.md")

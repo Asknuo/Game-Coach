@@ -108,3 +108,42 @@ async def test_batch_processed_concurrently():
     assert len(done_at) == 3
     # 并发执行：三个 0.1s 的任务总窗口应远小于 0.3s 串行
     assert max(done_at) - start < 0.25
+
+
+@pytest.mark.asyncio
+async def test_handler_checked_before_batch_taken():
+    """P1 回归：断连竞态下 drain 醒来发现无 handler 时，必须把批次留在
+    pending——早先的实现先取批再判空，事件被静默吞掉且无任何计数."""
+    q = MemoryQueue(window=0.05, skill_cooldown=0.0)
+    handled: list[str] = []
+
+    async def handler(item):
+        handled.append(item["event"].name)
+
+    q.set_handler(handler)
+    await q.enqueue(_item("kill"))
+    q.set_handler(None)  # 模拟 session 断连清 handler（窗口尚未到期）
+
+    await asyncio.sleep(0.15)
+    assert handled == []
+    assert q.pending_count == 1  # 批次完好保留，未被吞
+
+
+@pytest.mark.asyncio
+async def test_max_per_window_excess_counted():
+    """超窗口条数截断时必须计入 metrics.tips_dropped（此前静默丢弃）."""
+    metrics: dict = {}
+    q = MemoryQueue(window=0.05, max_per_window=2, skill_cooldown=0.0,
+                    burst_flush_at=0, metrics=metrics)
+    handled: list[str] = []
+
+    async def handler(item):
+        handled.append(item["event"].name)
+
+    q.set_handler(handler)
+    for name in ("kill", "gold_spike", "laning_check", "macro_check"):
+        await q.enqueue(_item(name))
+
+    await asyncio.sleep(0.15)
+    assert len(handled) == 2
+    assert metrics["tips_dropped"] == 2

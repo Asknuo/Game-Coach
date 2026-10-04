@@ -19,6 +19,12 @@ class Retriever:
         self.store = store
         self.embedder = embedder
 
+    def close(self) -> None:
+        """释放 embedder 连接池（lifespan 关闭时调用）."""
+        close = getattr(self.embedder, "close", None)
+        if close is not None:
+            close()
+
     @property
     def available(self) -> bool:
         return self.store.available and self.embedder.available

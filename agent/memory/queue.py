@@ -28,6 +28,7 @@ class MemoryQueue:
                     而非事件名 — item_purchased 与 gold_spike 同属 build）
     burst_flush_at: 窗口内事件攒到该条数立即提前消费（团战爆发）；
                     置 0 关闭突发触发
+    metrics:        可选的运行时指标 dict，批次被丢弃时累加 tips_dropped
     """
 
     def __init__(
@@ -36,11 +37,13 @@ class MemoryQueue:
         max_per_window: int = 2,
         skill_cooldown: float = 25.0,
         burst_flush_at: int = 3,
+        metrics: dict | None = None,
     ):
         self.window = window
         self.max_per_window = max_per_window
         self.skill_cooldown = skill_cooldown
         self.burst_flush_at = burst_flush_at
+        self.metrics = metrics
         # 突发提前消费信号：drain 在窗口内等待此信号，攒批即醒（3.10+ 无需运行循环即可创建）
         self._flush_event = asyncio.Event()
 
@@ -99,9 +102,13 @@ class MemoryQueue:
             burst = True
         except asyncio.TimeoutError:
             pass
+        # 先清信号再取批：取批之后到达的 set() 一定保留到下一轮，
+        # 不会把"刚入队就到期"的信号吃成一个完整窗口的延迟
         self._flush_event.clear()
 
-        if not self._pending:
+        # handler 检查必须早于取批：断连竞态下（session 收尾清 handler）
+        # 已取出的批次若找不到 handler 会被静默吞掉——既不处理也不回填
+        if not self._handler:
             return
 
         batch = list(self._pending)
@@ -109,7 +116,17 @@ class MemoryQueue:
 
         # 按优先级降序 + 截断
         batch.sort(key=lambda x: x.get("priority", 1), reverse=True)
+        dropped = batch[self.max_per_window:]
         batch = batch[: self.max_per_window]
+        if dropped:
+            logger.info("queue: %d events exceed max_per_window=%d — dropped",
+                        len(dropped), self.max_per_window)
+            if self.metrics is not None:
+                self.metrics["tips_dropped"] = (
+                    self.metrics.get("tips_dropped", 0) + len(dropped))
+
+        if not batch:
+            return
 
         # flush 诊断日志：突发/窗口触发 + 队内最长等待（session 埋点缺失时跳过）
         waits = [
@@ -122,9 +139,6 @@ class MemoryQueue:
                 "queue flush: %d events via %s, waited=%.2fs",
                 len(batch), "burst" if burst else "window", max(waits),
             )
-
-        if not self._handler:
-            return
 
         results = await asyncio.gather(
             *(self._safe_handle(item) for item in batch),

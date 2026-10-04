@@ -37,8 +37,25 @@ class RedisStore:
     @property
     def client(self) -> redis.Redis:
         if self._client is None:
-            self._client = redis.from_url(self.url, decode_responses=True)
+            # 显式 socket 超时：默认无超时，Redis 卡住会让 _on_state 的
+            # 两个 await 无限挂起 → WS 循环停摆、队列不再被消费
+            self._client = redis.from_url(
+                self.url,
+                decode_responses=True,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+            )
         return self._client
+
+    async def close(self) -> None:
+        """关闭连接池（lifespan 关闭时调用，避免 --reload 反复泄漏）."""
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except Exception:
+                logger.debug("redis close failed", exc_info=True)
+            self._client = None
+        self._memory.clear()
 
     def _key(self, session_id: str, suffix: str) -> str:
         return f"coach:{session_id}:{suffix}"
@@ -76,6 +93,29 @@ class RedisStore:
             return bool(expiry and expiry > time.time())
 
     # ── 反馈闭环追踪 ──
+
+    async def reset_session(self, session_id: str) -> None:
+        """清空会话级状态（新一局 lcu_game_start 时调用）.
+
+        删除该 session 的 tip 去重标记、skill 置信度、反馈观察记录与
+        最新 state 缓存。上一局 conf:*（TTL 24h）与 cooldown 残留会让
+        新局前几分钟的建议被静音，必须显式重置。
+        """
+        pattern = self._key(session_id, "*")
+        try:
+            cursor = None
+            while cursor != 0:
+                cursor, keys = await self.client.scan(
+                    cursor=cursor or 0, match=pattern, count=100)
+                if keys:
+                    await self.client.delete(*keys)
+        except redis.RedisError:
+            logger.exception("reset_session failed (redis)")
+        # 兜底模式下的进程内残留同步清理
+        prefix = f"{session_id}:"
+        for key in [k for k in self._memory if k.startswith(prefix)]:
+            self._memory.pop(key, None)
+        self._memory.pop("last_advice", None)
 
     async def record_advice_given(
         self, session_id: str, skill: str, event_name: str,
