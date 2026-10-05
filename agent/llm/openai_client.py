@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 
 from models.state import CoachingTip, GameState
 from prompt.coach_prompt import SYSTEM_PROMPT
+from prompt.context_builder import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,9 @@ class OpenAIClient:
                 f"Gold: {int(state.active_player.current_gold)}"
             )
 
-        is_rich = rag_context and len(rag_context) > 200
+        # 按 token 而非字符数判断“知识是否丰富”——中文 200 字与英文 200 char
+        # 的信息量差一倍以上，用 len() 会系统性高估中文上下文
+        is_rich = bool(rag_context) and estimate_tokens(rag_context) >= 60
 
         user_prompt = (
             f"Skill: {tip.skill}\n"

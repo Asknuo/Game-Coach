@@ -54,7 +54,7 @@ LOL Client ─┬─ Live Client Data API (127.0.0.1:2999) ─────┐
 | **渐进式披露** | 三层加载：description 常驻 → SKILL.md 按需 → references/ 懒加载 |
 | **贵精不贵多** | 7 个 skill 各司其职，每个都落在 Anthropic 9 大分类中的某一类 |
 
-### LLM 润色的三层上下文结构
+### LLM 润色的四层上下文结构
 
 ```
 ┌──────────────────────────────────────┐
@@ -68,6 +68,10 @@ LOL Client ─┬─ Live Client Data API (127.0.0.1:2999) ─────┐
                 ▼
          润色后的 Coaching Tip
 ```
+
+四层由 `prompt/context_builder.py` 统一组装：按 token 预算（`LLM_CONTEXT_BUDGET_TOKENS`，
+默认 6000）在 section 边界裁剪，裁剪顺序为 Guidelines → RAG，Gotchas 与 Player Context
+永不裁剪（前者是最高信号约束，后者决定个性化）。
 
 ---
 

@@ -5,6 +5,7 @@ import logging
 import time
 
 from graph.state import CoachState
+from prompt.context_builder import build_polish_context
 
 logger = logging.getLogger(__name__)
 
@@ -53,25 +54,13 @@ class GenerationMixin:
             snapshot = None
 
         # ── 构建增强上下文：SKILL.md + gotchas + RAG + memory ──
-        parts = []
-
-        # 1. SKILL.md 正文（skill 的 coaching 指导方针）
-        if state.get("skill_context"):
-            parts.append("=== Coaching Guidelines ===\n" + state["skill_context"])
-
-        # 2. 坑点清单（最高信号内容）
-        if state.get("skill_gotchas"):
-            parts.append("=== CRITICAL Gotchas (do NOT give wrong advice) ===\n" + state["skill_gotchas"])
-
-        # 3. RAG 知识
-        if state.get("rag_docs"):
-            parts.append("=== Game Knowledge ===\n" + "\n".join(state["rag_docs"][:2]))
-
-        # 4. 记忆
-        if state.get("memory_context"):
-            parts.append("=== Player Context ===\n" + state["memory_context"])
-
-        rag_ctx = "\n\n".join(parts) if parts else None
+        # 分层与 token 预算统一由 build_polish_context 处理（gotchas/memory 永不裁剪）
+        rag_ctx = build_polish_context(
+            skill_context=state.get("skill_context", ""),
+            skill_gotchas=state.get("skill_gotchas", ""),
+            rag_docs=state.get("rag_docs"),
+            memory_context=state.get("memory_context", ""),
+        )
 
         emitter = self.deps.on_polish_delta
         try:

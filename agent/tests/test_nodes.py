@@ -371,3 +371,60 @@ class TestLLMPolish:
         out = await nodes.llm_polish(_coach_state("low_health"))
         assert out["polished_message"] == "先撤再打"
         assert emitted[-1] == "先撤再打"  # 最终 emit 与落锤文本一致
+
+
+# ── 四层上下文组装（分层优先级 + token 预算） ────────────
+
+from prompt.context_builder import build_polish_context, estimate_tokens  # noqa: E402
+
+
+class TestBuildPolishContext:
+    def test_empty_returns_none(self):
+        """四层全空 → 不注入任何上下文."""
+        assert build_polish_context() is None
+        assert build_polish_context(skill_context="   ", rag_docs=[]) is None
+
+    def test_display_order_is_guidelines_first(self):
+        """展示顺序与裁剪优先级无关：指导方针 → 坑点 → 知识 → 记忆."""
+        ctx = build_polish_context(
+            skill_context="## S\n方针", skill_gotchas="坑点",
+            rag_docs=["知识"], memory_context="记忆",
+        )
+        assert (
+            ctx.index("Coaching Guidelines")
+            < ctx.index("CRITICAL Gotchas")
+            < ctx.index("Game Knowledge")
+            < ctx.index("Player Context")
+        )
+
+    def test_budget_trims_guidelines_before_rag(self):
+        """预算不足 → 先裁指导方针（最低优先级），保留 RAG 知识."""
+        guide = "## S1\n" + "字" * 4000
+        ctx = build_polish_context(
+            skill_context=guide, rag_docs=["关键的局势知识"], budget_tokens=60,
+        )
+        assert "S1" not in ctx                 # 指导方针被裁掉
+        assert "关键的局势知识" in ctx          # RAG 保留
+
+    def test_gotchas_and_memory_never_trimmed(self):
+        """坑点与记忆是最高信号/个性化，任何预算下都不裁剪."""
+        ctx = build_polish_context(
+            skill_gotchas="绝对不能给错建议", memory_context="玩家是钻石玩家",
+            skill_context="## S1\n" + "字" * 5000, budget_tokens=5,
+        )
+        assert "绝对不能给错建议" in ctx
+        assert "玩家是钻石玩家" in ctx
+        assert "S1" not in ctx
+
+    def test_truncation_stops_at_section_boundary(self):
+        """按整节裁剪，不产生半句；保留预算装得下的前若干节."""
+        guide = "## A\n" + "字" * 20 + "\n## B\n" + "字" * 4000
+        ctx = build_polish_context(skill_context=guide, budget_tokens=40)
+        assert "## A" in ctx
+        assert "## B" not in ctx               # 第二节整节丢弃，而非拦腰截断
+
+    def test_estimate_tokens_cjk_heavier_than_ascii(self):
+        """中文按 1 token/字、英文按 4 char/token 粗估."""
+        assert estimate_tokens("英雄联盟") == 4
+        assert estimate_tokens("abcd") == 1
+        assert estimate_tokens("") == 0
